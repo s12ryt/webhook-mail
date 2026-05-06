@@ -31,12 +31,15 @@ function hashPassword(password) {
 
 function verifyPassword(password, stored) {
   if (!String(stored).startsWith("pbkdf2$")) {
-    return crypto.timingSafeEqual(Buffer.from(password), Buffer.from(String(stored || "")));
+    const expected = Buffer.from(String(stored || ""));
+    const actual = Buffer.from(password);
+    return expected.length === actual.length && crypto.timingSafeEqual(actual, expected);
   }
   const parts = String(stored).split("$");
   if (parts.length !== 4) return false;
   const digest = crypto.pbkdf2Sync(password, Buffer.from(parts[2], "base64"), Number(parts[1]), 32, "sha256");
-  return crypto.timingSafeEqual(digest, Buffer.from(parts[3], "base64"));
+  const expected = Buffer.from(parts[3], "base64");
+  return expected.length === digest.length && crypto.timingSafeEqual(digest, expected);
 }
 
 function loadStore() {
