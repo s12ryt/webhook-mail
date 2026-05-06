@@ -26,6 +26,7 @@ import java.util.concurrent.Executors;
 public class WebhookMail {
   static final int PORT = Integer.parseInt(System.getenv().getOrDefault("PORT", "3000"));
   static final String ADMIN_INITIAL_PASSWORD = System.getenv().getOrDefault("ADMIN_INITIAL_PASSWORD", "change-me-now");
+  static final String ADMIN_INITIAL_USERNAME = System.getenv().getOrDefault("ADMIN_INITIAL_USERNAME", "admin");
   static final String WEBHOOK_SHARED_SECRET = System.getenv().getOrDefault("WEBHOOK_SHARED_SECRET", "");
   static final Path DATA_FILE = Path.of(System.getenv().getOrDefault("DATA_FILE", "webhook-mail-java.json"));
   static final SecureRandom RANDOM = new SecureRandom();
@@ -101,7 +102,7 @@ public class WebhookMail {
         Map<String, String> form = parseForm(body(exchange));
         String username = form.getOrDefault("username", "").trim();
         String password = form.getOrDefault("password", "");
-        if (username.length() < 3 || username.equals("admin") || store.users.containsKey(username) || password.length() < 8) {
+        if (username.length() < 3 || username.equals(ADMIN_INITIAL_USERNAME) || store.users.containsKey(username) || password.length() < 8) {
           sendHtml(exchange, 400, dashboard(session, "使用者名稱或密碼不合法"), null);
           return;
         }
@@ -215,7 +216,7 @@ public class WebhookMail {
 
   static String loginPage(String error) {
     String notice = error == null || error.isBlank() ? "" : "<div class='notice error'>" + esc(error) + "</div>";
-    return page("webhook-mail 登入", "<section class='hero'><span class='badge'>SINGLE FILE JAVA</span><h1>webhook-mail 登入</h1><p>管理員帳號 admin，密碼來自 ADMIN_INITIAL_PASSWORD。</p></section>" + notice + "<section class='panel'><form method='post' action='/login'><label>帳號<input name='username' required></label><label>密碼<input name='password' type='password' required></label><button>登入</button></form></section>");
+    return page("webhook-mail 登入", "<section class='hero'><span class='badge'>SINGLE FILE JAVA</span><h1>webhook-mail 登入</h1><p>管理員帳號來自 ADMIN_INITIAL_USERNAME，密碼來自 ADMIN_INITIAL_PASSWORD。</p></section>" + notice + "<section class='panel'><form method='post' action='/login'><label>帳號<input name='username' required></label><label>密碼<input name='password' type='password' required></label><button>登入</button></form></section>");
   }
 
   static String dashboard(Map<String, Object> session, String flash) {
@@ -246,8 +247,8 @@ public class WebhookMail {
     Store(Path path) throws Exception {
       this.path = path;
       load();
-      if (!users.containsKey("admin")) {
-        users.put("admin", new LinkedHashMap<>(Map.of("username", "admin", "password", hashPassword(ADMIN_INITIAL_PASSWORD), "role", "admin", "createdAt", nowIso())));
+      if (!users.containsKey(ADMIN_INITIAL_USERNAME)) {
+        users.put(ADMIN_INITIAL_USERNAME, new LinkedHashMap<>(Map.of("username", ADMIN_INITIAL_USERNAME, "password", hashPassword(ADMIN_INITIAL_PASSWORD), "role", "admin", "createdAt", nowIso())));
         save();
       }
     }
