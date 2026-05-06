@@ -10,3 +10,4 @@
 - `docker-accept` 已擴充 GitHub 郵件儲存功能；目前 GitHub 相關設定包含 `GITHUB_URL`、`GITHUB_TOKEN`、`GITHUB_OWNER`、`GITHUB_REPO`、`GITHUB_BRANCH`、`GITHUB_PATH`，其中私人倉庫上傳必須提供 `GITHUB_TOKEN`。
 - `docker-accept` 現在的資料庫策略為 MySQL / Postgres 二選一；若兩者都未設定則退回記憶體模式，若兩者同時設定則啟動失敗以避免歧義。
 - `docker-accept` 的密碼儲存目前採 scrypt 雜湊；為了兼容先前明文資料，登入驗證支援舊值，且成功登入後會自動將舊明文更新成雜湊。
+- issue #12 要求 Python、Node.js、Java 都能單文件部署，最多再附一個依賴安裝文件；本次選擇全部使用標準庫/內建模組，放在 `single-file/`，以本地 JSON 檔替代完整 TypeScript 版的 MySQL/Postgres/GitHub 儲存後端。

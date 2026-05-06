@@ -17,3 +17,4 @@
 - 2026-05-06：依使用者要求為 `docker-accept` 實作 GitHub 郵件 JSON 自動上傳，支援私人倉庫所需的 `GITHUB_TOKEN` 與目標倉庫/分支/路徑設定。
 - 2026-05-06：依使用者要求為 `docker-accept` 補上真正的資料庫儲存層，支援 MySQL 或 Postgres 二選一，並把郵件、帳號、session 全部持久化。
 - 2026-05-06：將 `docker-accept` 帳號密碼改為以 scrypt 雜湊儲存，並相容舊明文資料於登入成功後自動升級。
+- 2026-05-06：開始處理 issue #12，新增 `single-file/` 單文件部署版本，涵蓋 Python、Node.js、Java 三種獨立執行服務。
