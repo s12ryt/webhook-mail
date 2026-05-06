@@ -36,7 +36,7 @@ public class WebhookMail {
     store = new Store(DATA_FILE);
     HttpServer server = HttpServer.create(new InetSocketAddress("0.0.0.0", PORT), 0);
     server.createContext("/", WebhookMail::handle);
-    server.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
+    server.setExecutor(Executors.newCachedThreadPool());
     System.out.printf("webhook-mail java single-file listening on http://localhost:%d (data: %s)%n", PORT, DATA_FILE);
     server.start();
   }
