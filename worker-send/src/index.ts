@@ -1,6 +1,7 @@
 export interface Env {
   DOCKER_ACCEPT_WEBHOOK_URL: string;
   WEBHOOK_SHARED_SECRET?: string;
+  WEBHOOK_TIMEOUT_MS?: string;
 }
 
 type EmailWebhookPayload = {
@@ -17,6 +18,22 @@ type EmailWebhookPayload = {
 };
 
 const encoder = new TextEncoder();
+
+function parseWebhookUrls(value: string): string[] {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function getTimeoutMs(value?: string): number {
+  const parsed = Number.parseInt(value ?? "10000", 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return 10000;
+  }
+
+  return parsed;
+}
 
 function previewText(rawText: string): string {
   return rawText.replace(/\s+/g, " ").trim().slice(0, 500);
@@ -45,28 +62,66 @@ async function sendWebhook(message: ForwardableEmailMessage, env: Env): Promise<
     return new Response("Missing DOCKER_ACCEPT_WEBHOOK_URL", { status: 500 });
   }
 
+  const webhookUrls = parseWebhookUrls(env.DOCKER_ACCEPT_WEBHOOK_URL);
+  if (!webhookUrls.length) {
+    return new Response("No valid webhook URLs configured", { status: 500 });
+  }
+
   const payload = await buildPayload(message);
   const body = JSON.stringify(payload);
   const signature = await crypto.subtle.digest("SHA-256", encoder.encode(body));
   const checksum = Array.from(new Uint8Array(signature)).map((value) => value.toString(16).padStart(2, "0")).join("");
 
-  const response = await fetch(env.DOCKER_ACCEPT_WEBHOOK_URL, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-webhook-source": "cloudflare-email-worker",
-      "x-webhook-checksum": checksum,
-      ...(env.WEBHOOK_SHARED_SECRET ? { "x-webhook-secret": env.WEBHOOK_SHARED_SECRET } : {})
-    },
-    body
-  });
+  const timeoutMs = getTimeoutMs(env.WEBHOOK_TIMEOUT_MS);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort("Webhook request timeout"), timeoutMs);
 
-  if (!response.ok) {
-    const responseText = await response.text();
-    throw new Error(`Webhook delivery failed: ${response.status} ${responseText}`);
+  try {
+    const results = await Promise.allSettled(
+      webhookUrls.map(async (url) => {
+        const response = await fetch(url, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-webhook-source": "cloudflare-email-worker",
+            "x-webhook-checksum": checksum,
+            ...(env.WEBHOOK_SHARED_SECRET ? { "x-webhook-secret": env.WEBHOOK_SHARED_SECRET } : {})
+          },
+          body,
+          signal: controller.signal
+        });
+
+        if (!response.ok) {
+          const responseText = await response.text();
+          throw new Error(`[${url}] ${response.status} ${responseText}`);
+        }
+
+        return response;
+      })
+    );
+
+    const successfulCount = results.filter((result) => result.status === "fulfilled").length;
+    const failures = results
+      .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+      .map((result) => String(result.reason));
+
+    if (!successfulCount) {
+      throw new Error(`Webhook delivery failed for all targets: ${failures.join(" | ")}`);
+    }
+
+    if (failures.length) {
+      console.error(`Webhook partially delivered (${successfulCount}/${webhookUrls.length})`, failures.join(" | "));
+    } else {
+      console.log(`Webhook delivered to ${successfulCount} target(s)`);
+    }
+
+    return new Response(JSON.stringify({ ok: true, delivered: successfulCount, total: webhookUrls.length }), {
+      status: 202,
+      headers: { "content-type": "application/json" }
+    });
+  } finally {
+    clearTimeout(timeoutId);
   }
-
-  return response;
 }
 
 export default {
