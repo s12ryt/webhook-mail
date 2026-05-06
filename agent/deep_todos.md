@@ -12,3 +12,4 @@
 
 - 2026-05-06：根據 issue #1 從空倉庫初始化整個專案。
 - 2026-05-06：開始處理 issue #3，將 `docker-accept` 擴充為具登入機制與用戶管理的黑藍風格控制台。
+- 2026-05-06：處理 issue #7，參考 `wenfxl/openai-cpa-email` 的思路，但不直接複製受限制/混淆程式碼；為 `worker-send` 補上多 webhook URL、timeout 與較清楚的投遞結果紀錄。
