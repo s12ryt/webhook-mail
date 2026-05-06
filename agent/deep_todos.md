@@ -19,3 +19,4 @@
 - 2026-05-06：將 `docker-accept` 帳號密碼改為以 scrypt 雜湊儲存，並相容舊明文資料於登入成功後自動升級。
 - 2026-05-06：開始處理 issue #12，新增 `single-file/` 單文件部署版本，涵蓋 Python、Node.js、Java 三種獨立執行服務。
 - 2026-05-06：依使用者回饋補上 `ADMIN_INITIAL_USERNAME`，讓初始管理員帳號與密碼都可透過環境變數設定。
+- 2026-05-07：拉取最新 `main` 後檢查 bug，發現並修正 Node 單文件舊明文密碼比較可能丟出 `RangeError`、Java 單文件誤用 JDK 21 virtual thread API 導致不符合文件宣稱的 JDK 17+。
