@@ -1,31 +1,24 @@
+import { randomBytes, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
+import { promisify } from "node:util";
+
 import express, { type Request, type Response } from "express";
 
-type EmailWebhookPayload = {
-  event: string;
-  messageId: string;
-  from: string;
-  to: string[];
-  rawSize: number;
-  subject: string;
-  headers: Record<string, string>;
-  textPreview: string;
-  rawBase64: string;
-  receivedAt: string;
+import { createStorageAdapter, getStorageDisplayMode } from "./storage.js";
+import type { EmailWebhookPayload, SessionRecord, UserAccount } from "./types.js";
+
+type GitHubUploadConfig = {
+  token: string;
+  owner: string;
+  repo: string;
+  branch: string;
+  path: string;
+  displayUrl: string;
 };
 
-type UserRole = "admin" | "member";
-
-type UserAccount = {
-  username: string;
-  password: string;
-  role: UserRole;
-  createdAt: string;
-};
-
-type SessionRecord = {
-  username: string;
-  role: UserRole;
-  createdAt: string;
+type GitHubUploadResult = {
+  enabled: boolean;
+  path?: string;
+  url?: string;
 };
 
 const app = express();
@@ -34,15 +27,158 @@ const sharedSecret = process.env.WEBHOOK_SHARED_SECRET;
 const adminBootstrapPassword = process.env.ADMIN_INITIAL_PASSWORD ?? "change-me-now";
 const mysqlConnection = process.env.MYSQL_URL ?? "";
 const postgresConnection = process.env.POSTGRES_URL ?? "";
-const githubConnection = process.env.GITHUB_URL ?? "";
-
-const receivedEvents: EmailWebhookPayload[] = [];
-const users = new Map<string, UserAccount>();
-const sessions = new Map<string, SessionRecord>();
+const githubConnection = buildGitHubConnection();
+const storageMode = getStorageDisplayMode(mysqlConnection, postgresConnection);
+const storage = createStorageAdapter(mysqlConnection, postgresConnection);
+const scrypt = promisify(scryptCallback);
+const PASSWORD_HASH_PREFIX = "scrypt";
 
 app.use(express.json({ limit: "15mb" }));
 app.use(express.urlencoded({ extended: false }));
 app.use(express.static("public"));
+
+function parseGitHubRepoUrl(value: string): { owner: string; repo: string } | null {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    const url = new URL(value);
+    const parts = url.pathname.split("/").filter(Boolean);
+    if (parts.length < 2) {
+      return null;
+    }
+
+    return {
+      owner: parts[0] ?? "",
+      repo: (parts[1] ?? "").replace(/\.git$/i, "")
+    };
+  } catch {
+    return null;
+  }
+}
+
+function normalizePathSegment(value: string): string {
+  return value.trim().replace(/^\/+|\/+$/g, "");
+}
+
+function normalizeMessageId(value: string): string {
+  return value.replace(/[<>]/g, "").replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || "message";
+}
+
+function normalizeGitHubPath(value: string): string {
+  return value
+    .split("/")
+    .map((segment) => normalizePathSegment(segment))
+    .filter(Boolean)
+    .join("/");
+}
+
+function buildGitHubConnection(): string {
+  const explicitUrl = String(process.env.GITHUB_URL ?? "").trim();
+  if (explicitUrl) {
+    return explicitUrl;
+  }
+
+  const owner = String(process.env.GITHUB_OWNER ?? "").trim();
+  const repo = String(process.env.GITHUB_REPO ?? "").trim();
+  const branch = String(process.env.GITHUB_BRANCH ?? "main").trim() || "main";
+  const path = normalizeGitHubPath(String(process.env.GITHUB_PATH ?? "mail-events"));
+
+  if (!owner || !repo) {
+    return "";
+  }
+
+  return `https://github.com/${owner}/${repo}/tree/${branch}/${path}`;
+}
+
+function getGitHubUploadConfig(): GitHubUploadConfig | null {
+  const explicitUrl = String(process.env.GITHUB_URL ?? "").trim();
+  const parsed = parseGitHubRepoUrl(explicitUrl);
+  const token = String(process.env.GITHUB_TOKEN ?? "").trim();
+  const owner = String(process.env.GITHUB_OWNER ?? parsed?.owner ?? "").trim();
+  const repo = String(process.env.GITHUB_REPO ?? parsed?.repo ?? "").trim();
+  const branch = String(process.env.GITHUB_BRANCH ?? "main").trim() || "main";
+  const path = normalizeGitHubPath(String(process.env.GITHUB_PATH ?? "mail-events")) || "mail-events";
+
+  if (!token && !owner && !repo && !explicitUrl) {
+    return null;
+  }
+
+  if (!token) {
+    throw new Error("Missing GITHUB_TOKEN for GitHub upload");
+  }
+
+  if (!owner || !repo) {
+    throw new Error("Missing GITHUB_OWNER / GITHUB_REPO (or a valid GITHUB_URL) for GitHub upload");
+  }
+
+  return {
+    token,
+    owner,
+    repo,
+    branch,
+    path,
+    displayUrl: explicitUrl || `https://github.com/${owner}/${repo}/tree/${branch}/${path}`
+  };
+}
+
+function buildGitHubMailPath(payload: EmailWebhookPayload, basePath: string): string {
+  const receivedDate = new Date(payload.receivedAt);
+  const year = Number.isNaN(receivedDate.getTime()) ? "unknown-year" : String(receivedDate.getUTCFullYear());
+  const month = Number.isNaN(receivedDate.getTime()) ? "unknown-month" : String(receivedDate.getUTCMonth() + 1).padStart(2, "0");
+  const day = Number.isNaN(receivedDate.getTime()) ? "unknown-day" : String(receivedDate.getUTCDate()).padStart(2, "0");
+  const timestamp = Number.isNaN(receivedDate.getTime()) ? Date.now() : receivedDate.getTime();
+  const messageId = normalizeMessageId(payload.messageId);
+
+  return `${basePath}/${year}/${month}/${day}/${timestamp}-${messageId}.json`;
+}
+
+async function uploadEmailToGitHub(payload: EmailWebhookPayload): Promise<GitHubUploadResult> {
+  const config = getGitHubUploadConfig();
+  if (!config) {
+    return { enabled: false };
+  }
+
+  const filePath = buildGitHubMailPath(payload, config.path);
+  const content = JSON.stringify(
+    {
+      storedAt: new Date().toISOString(),
+      source: "docker-accept",
+      payload
+    },
+    null,
+    2
+  );
+
+  const response = await fetch(`https://api.github.com/repos/${config.owner}/${config.repo}/contents/${filePath}`, {
+    method: "PUT",
+    headers: {
+      authorization: `Bearer ${config.token}`,
+      accept: "application/vnd.github+json",
+      "x-github-api-version": "2022-11-28",
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({
+      message: `Store email ${payload.messageId}`,
+      content: Buffer.from(content, "utf8").toString("base64"),
+      branch: config.branch
+    })
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`GitHub upload failed: ${response.status} ${detail}`);
+  }
+
+  const data = (await response.json()) as { content?: { html_url?: string } };
+
+  return {
+    enabled: true,
+    path: filePath,
+    url: data.content?.html_url ?? config.displayUrl
+  };
+}
 
 function parseCookies(request: Request): Record<string, string> {
   const header = request.header("cookie");
@@ -64,30 +200,56 @@ function parseCookies(request: Request): Record<string, string> {
   );
 }
 
-function getSession(request: Request): SessionRecord | null {
+async function getSession(request: Request): Promise<SessionRecord | null> {
   const sessionId = parseCookies(request).webhook_mail_session;
   if (!sessionId) {
     return null;
   }
 
-  return sessions.get(sessionId) ?? null;
+  return storage.getSession(sessionId);
 }
 
-function ensureAdminAccount(): UserAccount {
-  const existing = users.get("admin");
-  if (existing) {
-    return existing;
+async function ensureAdminAccount(): Promise<UserAccount> {
+  return storage.ensureAdminAccount(await hashPassword(adminBootstrapPassword));
+}
+
+async function hashPassword(password: string): Promise<string> {
+  const salt = randomBytes(16).toString("hex");
+  const derived = (await scrypt(password, salt, 64)) as Buffer;
+  return `${PASSWORD_HASH_PREFIX}$${salt}$${derived.toString("hex")}`;
+}
+
+function isHashedPassword(value: string): boolean {
+  return value.startsWith(`${PASSWORD_HASH_PREFIX}$`);
+}
+
+async function verifyPassword(password: string, storedPassword: string): Promise<boolean> {
+  if (!isHashedPassword(storedPassword)) {
+    return password === storedPassword;
   }
 
-  const account: UserAccount = {
-    username: "admin",
-    password: adminBootstrapPassword,
-    role: "admin",
-    createdAt: new Date().toISOString()
-  };
+  const [, salt, expectedHex] = storedPassword.split("$");
+  if (!salt || !expectedHex) {
+    return false;
+  }
 
-  users.set(account.username, account);
-  return account;
+  const expected = Buffer.from(expectedHex, "hex");
+  const derived = (await scrypt(password, salt, expected.length)) as Buffer;
+
+  return expected.length === derived.length && timingSafeEqual(expected, derived);
+}
+
+async function verifyAndUpgradePassword(account: UserAccount, password: string): Promise<boolean> {
+  const matched = await verifyPassword(password, account.password);
+  if (!matched) {
+    return false;
+  }
+
+  if (!isHashedPassword(account.password)) {
+    await storage.updateUserPassword(account.username, await hashPassword(password));
+  }
+
+  return true;
 }
 
 function maskSecret(value: string): string {
@@ -155,9 +317,16 @@ function renderConnectionCard(title: string, value: string): string {
   `;
 }
 
-function renderDashboardPage(session: SessionRecord, flash?: { kind: "success" | "error"; message: string; detail?: string }): string {
+async function renderDashboardPage(session: SessionRecord, flash?: { kind: "success" | "error"; message: string; detail?: string }): Promise<string> {
   const admin = session.role === "admin";
-  const accountList = Array.from(users.values())
+  const [users, receivedEvents, userCount, eventCount] = await Promise.all([
+    storage.listUsers(),
+    storage.listRecentEmailEvents(20),
+    storage.countUsers(),
+    storage.countEmailEvents()
+  ]);
+
+  const accountList = users
     .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
     .map(
       (account) => `
@@ -234,9 +403,9 @@ function renderDashboardPage(session: SessionRecord, flash?: { kind: "success" |
       ${flashBanner}
       <section class="stats">
         <article class="card"><div class="label">登入身份</div><div class="value">${escapeHtml(session.role)}</div></article>
-        <article class="card"><div class="label">收到事件</div><div class="value">${receivedEvents.length}</div></article>
-        <article class="card"><div class="label">帳號數</div><div class="value">${users.size}</div></article>
-        <article class="card"><div class="label">服務狀態</div><div class="value">online</div></article>
+        <article class="card"><div class="label">收到事件</div><div class="value">${eventCount}</div></article>
+        <article class="card"><div class="label">帳號數</div><div class="value">${userCount}</div></article>
+        <article class="card"><div class="label">儲存模式</div><div class="value">${escapeHtml(storageMode)}</div></article>
       </section>
       <section class="grid" style="margin-bottom: 24px;">
         ${renderConnectionCard("MySQL", mysqlConnection)}
@@ -278,85 +447,23 @@ function renderDashboardPage(session: SessionRecord, flash?: { kind: "success" |
   );
 }
 
-function authenticate(username: string, password: string): SessionRecord | null {
-  if (username === "admin") {
-    const admin = ensureAdminAccount();
-    if (admin.password === password) {
-      return { username: admin.username, role: admin.role, createdAt: new Date().toISOString() };
-    }
-
-    return null;
-  }
-
-  const account = users.get(username);
-  if (!account || account.password !== password) {
+async function authenticate(username: string, password: string): Promise<SessionRecord | null> {
+  const account = username === "admin" ? await ensureAdminAccount() : await storage.findUser(username);
+  if (!account || !(await verifyAndUpgradePassword(account, password))) {
     return null;
   }
 
   return { username: account.username, role: account.role, createdAt: new Date().toISOString() };
 }
 
-function requireAdmin(request: Request, response: Response): SessionRecord | null {
-  const session = getSession(request);
+async function requireAdmin(request: Request, response: Response): Promise<SessionRecord | null> {
+  const session = await getSession(request);
   if (!session || session.role !== "admin") {
     response.status(403).type("html").send(renderLoginPage("需要管理員權限"));
     return null;
   }
 
   return session;
-}
-
-function renderPage(events: EmailWebhookPayload[]): string {
-  const cards = events.length
-    ? events
-        .map((event) => `
-          <article class="card">
-            <div class="pill">${event.event}</div>
-            <h2>${escapeHtml(event.subject)}</h2>
-            <p><strong>From:</strong> ${escapeHtml(event.from)}</p>
-            <p><strong>To:</strong> ${escapeHtml(event.to.join(", "))}</p>
-            <p><strong>Received:</strong> ${escapeHtml(event.receivedAt)}</p>
-            <p><strong>Message ID:</strong> ${escapeHtml(event.messageId)}</p>
-            <p><strong>Size:</strong> ${event.rawSize} bytes</p>
-            <pre>${escapeHtml(event.textPreview || "(empty preview)")}</pre>
-          </article>
-        `)
-        .join("")
-    : `<article class="card empty"><h2>尚未收到任何 webhook</h2><p>等待 worker-send 傳送第一封郵件事件。</p></article>`;
-
-  return `<!DOCTYPE html>
-  <html lang="zh-Hant">
-    <head>
-      <meta charset="UTF-8" />
-      <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-      <title>docker-accept mail dashboard</title>
-      <link rel="stylesheet" href="/css/style.css" />
-    </head>
-    <body>
-      <main class="wrap">
-        <section class="hero">
-          <div class="pill">BLACK + BLUE UI</div>
-          <h1>docker-accept webhook dashboard</h1>
-          <p>這個服務會接收來自 Cloudflare Email Worker 的 webhook，保留最近事件並用黑底藍光風格頁面展示目前狀態。</p>
-        </section>
-        <section class="stats">
-          <div class="stat">
-            <div class="label">Webhook endpoint</div>
-            <div class="value">/api/webhooks/email</div>
-          </div>
-          <div class="stat">
-            <div class="label">Received events</div>
-            <div class="value">${events.length}</div>
-          </div>
-          <div class="stat">
-            <div class="label">Service status</div>
-            <div class="value">online</div>
-          </div>
-        </section>
-        <section class="grid">${cards}</section>
-      </main>
-    </body>
-  </html>`;
 }
 
 function escapeHtml(value: string): string {
@@ -368,12 +475,12 @@ function escapeHtml(value: string): string {
     .replaceAll("'", "&#39;");
 }
 
-app.get("/health", (_request: Request, response: Response) => {
-  response.json({ status: "ok", events: receivedEvents.length });
+app.get("/health", async (_request: Request, response: Response) => {
+  response.json({ status: "ok", events: await storage.countEmailEvents(), storage: storageMode });
 });
 
-app.get("/login", (request: Request, response: Response) => {
-  if (getSession(request)) {
+app.get("/login", async (request: Request, response: Response) => {
+  if (await getSession(request)) {
     response.redirect("/");
     return;
   }
@@ -381,10 +488,10 @@ app.get("/login", (request: Request, response: Response) => {
   response.type("html").send(renderLoginPage());
 });
 
-app.post("/login", (request: Request, response: Response) => {
+app.post("/login", async (request: Request, response: Response) => {
   const username = String(request.body.username ?? "").trim();
   const password = String(request.body.password ?? "");
-  const session = authenticate(username, password);
+  const session = await authenticate(username, password);
 
   if (!session) {
     response.status(401).type("html").send(renderLoginPage("帳號或密碼錯誤"));
@@ -392,32 +499,32 @@ app.post("/login", (request: Request, response: Response) => {
   }
 
   const sessionId = crypto.randomUUID();
-  sessions.set(sessionId, session);
+  await storage.createSession(sessionId, session);
   response.cookie("webhook_mail_session", sessionId, { httpOnly: true, sameSite: "lax" });
-  response.type("html").send(renderDashboardPage(session, { kind: "success", message: "登入成功" }));
+  response.type("html").send(await renderDashboardPage(session, { kind: "success", message: "登入成功" }));
 });
 
-app.post("/logout", (request: Request, response: Response) => {
+app.post("/logout", async (request: Request, response: Response) => {
   const cookies = parseCookies(request);
   if (cookies.webhook_mail_session) {
-    sessions.delete(cookies.webhook_mail_session);
+    await storage.deleteSession(cookies.webhook_mail_session);
   }
 
   response.clearCookie("webhook_mail_session");
   response.redirect("/login");
 });
 
-app.get("/", (request: Request, response: Response) => {
-  const session = getSession(request);
+app.get("/", async (request: Request, response: Response) => {
+  const session = await getSession(request);
   if (!session) {
     response.redirect("/login");
     return;
   }
 
-  response.type("html").send(renderDashboardPage(session));
+  response.type("html").send(await renderDashboardPage(session));
 });
 
-app.post("/api/webhooks/email", (request: Request, response: Response) => {
+app.post("/api/webhooks/email", async (request: Request, response: Response) => {
   if (sharedSecret) {
     const secret = request.header("x-webhook-secret");
     if (secret !== sharedSecret) {
@@ -445,14 +552,18 @@ app.post("/api/webhooks/email", (request: Request, response: Response) => {
     receivedAt: payload.receivedAt ?? new Date().toISOString()
   };
 
-  receivedEvents.unshift(normalized);
-  receivedEvents.splice(20);
-
-  response.status(202).json({ ok: true, stored: receivedEvents.length });
+  try {
+    await storage.storeEmailEvent(normalized);
+    const githubUpload = await uploadEmailToGitHub(normalized);
+    response.status(202).json({ ok: true, stored: await storage.countEmailEvents(), github: githubUpload, storage: storageMode });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    response.status(502).json({ ok: false, error: "storage or github upload failed", detail, storage: storageMode });
+  }
 });
 
-app.post("/api/users", (request: Request, response: Response) => {
-  const session = requireAdmin(request, response);
+app.post("/api/users", async (request: Request, response: Response) => {
+  const session = await requireAdmin(request, response);
   if (!session) {
     return;
   }
@@ -461,30 +572,30 @@ app.post("/api/users", (request: Request, response: Response) => {
   const password = String(request.body.password ?? "");
 
   if (!username || username === "admin" || username.length < 3) {
-    response.status(400).type("html").send(renderDashboardPage(session, { kind: "error", message: "使用者名稱不合法" }));
+    response.status(400).type("html").send(await renderDashboardPage(session, { kind: "error", message: "使用者名稱不合法" }));
     return;
   }
 
-  if (users.has(username)) {
-    response.status(409).type("html").send(renderDashboardPage(session, { kind: "error", message: "此帳號已存在" }));
+  if (await storage.findUser(username)) {
+    response.status(409).type("html").send(await renderDashboardPage(session, { kind: "error", message: "此帳號已存在" }));
     return;
   }
 
   if (password.length < 8) {
-    response.status(400).type("html").send(renderDashboardPage(session, { kind: "error", message: "密碼至少需要 8 個字元" }));
+    response.status(400).type("html").send(await renderDashboardPage(session, { kind: "error", message: "密碼至少需要 8 個字元" }));
     return;
   }
 
   const account: UserAccount = {
     username,
-    password,
+    password: await hashPassword(password),
     role: "member",
     createdAt: new Date().toISOString()
   };
 
-  users.set(username, account);
+  await storage.createUser(account);
   response.type("html").send(
-    renderDashboardPage(session, {
+    await renderDashboardPage(session, {
       kind: "success",
       message: "已建立普通用戶",
       detail: `帳號：${username}\n初始密碼：${password}\n請立即通知使用者登入後修改。`
@@ -492,6 +603,15 @@ app.post("/api/users", (request: Request, response: Response) => {
   );
 });
 
-app.listen(port, () => {
-  console.log(`docker-accept listening on http://localhost:${port}`);
-});
+storage
+  .init()
+  .then(() => ensureAdminAccount())
+  .then(() => {
+    app.listen(port, () => {
+      console.log(`docker-accept listening on http://localhost:${port} (storage: ${storage.mode})`);
+    });
+  })
+  .catch((error) => {
+    console.error("Failed to initialize docker-accept", error);
+    process.exit(1);
+  });
