@@ -1,0 +1,14 @@
+{
+  "name": "webhook-mail",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "worker-send",
+    "docker-accept"
+  ],
+  "scripts": {
+    "build": "npm run build -w worker-send && npm run build -w docker-accept",
+    "dev:worker": "npm run dev -w worker-send",
+    "dev:accept": "npm run dev -w docker-accept"
+  }
+}
