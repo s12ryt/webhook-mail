@@ -18,6 +18,7 @@ from typing import Any
 
 PORT = int(os.getenv("PORT", "3000"))
 ADMIN_INITIAL_PASSWORD = os.getenv("ADMIN_INITIAL_PASSWORD", "change-me-now")
+ADMIN_INITIAL_USERNAME = os.getenv("ADMIN_INITIAL_USERNAME", "admin")
 WEBHOOK_SHARED_SECRET = os.getenv("WEBHOOK_SHARED_SECRET", "")
 DATA_FILE = Path(os.getenv("DATA_FILE", "webhook-mail-python.json"))
 
@@ -64,9 +65,9 @@ class Store:
         self.path.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def ensure_admin(self) -> None:
-        if "admin" not in self.data["users"]:
-            self.data["users"]["admin"] = {
-                "username": "admin",
+        if ADMIN_INITIAL_USERNAME not in self.data["users"]:
+            self.data["users"][ADMIN_INITIAL_USERNAME] = {
+                "username": ADMIN_INITIAL_USERNAME,
                 "password": hash_password(ADMIN_INITIAL_PASSWORD),
                 "role": "admin",
                 "createdAt": now_iso(),
@@ -126,7 +127,7 @@ def page(title: str, body: str) -> bytes:
 
 def login_page(error: str = "") -> bytes:
     notice = f"<div class='notice error'>{html.escape(error)}</div>" if error else ""
-    return page("webhook-mail 登入", f"<section class='hero'><span class='badge'>SINGLE FILE PYTHON</span><h1>webhook-mail 登入</h1><p>管理員帳號 admin，密碼來自 ADMIN_INITIAL_PASSWORD。</p></section>{notice}<section class='panel'><form method='post' action='/login'><label>帳號<input name='username' required></label><label>密碼<input name='password' type='password' required></label><button>登入</button></form></section>")
+    return page("webhook-mail 登入", f"<section class='hero'><span class='badge'>SINGLE FILE PYTHON</span><h1>webhook-mail 登入</h1><p>管理員帳號來自 ADMIN_INITIAL_USERNAME，密碼來自 ADMIN_INITIAL_PASSWORD。</p></section>{notice}<section class='panel'><form method='post' action='/login'><label>帳號<input name='username' required></label><label>密碼<input name='password' type='password' required></label><button>登入</button></form></section>")
 
 
 def dashboard(session: dict[str, Any], flash: str = "") -> bytes:
@@ -235,7 +236,7 @@ class Handler(BaseHTTPRequestHandler):
             data = self.form()
             username = data.get("username", "").strip()
             password = data.get("password", "")
-            if len(username) < 3 or username == "admin" or username in store.data["users"] or len(password) < 8:
+            if len(username) < 3 or username == ADMIN_INITIAL_USERNAME or username in store.data["users"] or len(password) < 8:
                 self.send_bytes(dashboard(session, "使用者名稱或密碼不合法"), 400)
                 return
             store.create_user(username, password)

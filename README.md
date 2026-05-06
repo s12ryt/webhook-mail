@@ -61,6 +61,7 @@ npm run dev -w worker-send
 
 - `PORT`：服務埠號，預設 `3000`
 - `WEBHOOK_SHARED_SECRET`：選填，若有設定則 webhook 需帶上相同 secret 才會接受
+- `ADMIN_INITIAL_USERNAME`：管理員首次登入使用的初始帳號，預設 `admin`
 - `ADMIN_INITIAL_PASSWORD`：管理員首次登入使用的初始密碼，預設 `change-me-now`
 - `MYSQL_URL`：選填，MySQL 持久化連線字串；與 `POSTGRES_URL`、`GITHUB_*` 三選一
 - `POSTGRES_URL`：選填，Postgres 持久化連線字串；與 `MYSQL_URL`、`GITHUB_*` 三選一
@@ -86,6 +87,7 @@ npm run dev -w worker-send
 ```bash
 PORT=3000
 WEBHOOK_SHARED_SECRET=your-shared-secret
+ADMIN_INITIAL_USERNAME=admin
 ADMIN_INITIAL_PASSWORD=change-this-password
 MYSQL_URL=mysql://user:password@host:3306/dbname
 ```

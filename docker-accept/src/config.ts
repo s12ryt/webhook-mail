@@ -3,6 +3,7 @@ import type { GitHubStorageInput, StorageMode } from "./storage.js";
 export type RuntimeConfig = {
   port: number;
   sharedSecret?: string;
+  adminBootstrapUsername: string;
   adminBootstrapPassword: string;
   mysqlConnection: string;
   postgresConnection: string;
@@ -50,6 +51,7 @@ export function loadRuntimeConfig(storageMode: StorageMode): RuntimeConfig {
   return {
     port: Number(process.env.PORT ?? 3000),
     sharedSecret: process.env.WEBHOOK_SHARED_SECRET,
+    adminBootstrapUsername: process.env.ADMIN_INITIAL_USERNAME ?? "admin",
     adminBootstrapPassword: process.env.ADMIN_INITIAL_PASSWORD ?? "change-me-now",
     mysqlConnection: process.env.MYSQL_URL ?? "",
     postgresConnection: process.env.POSTGRES_URL ?? "",

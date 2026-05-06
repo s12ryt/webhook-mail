@@ -6,6 +6,7 @@ const querystring = require("node:querystring");
 
 const PORT = Number(process.env.PORT || 3000);
 const ADMIN_INITIAL_PASSWORD = process.env.ADMIN_INITIAL_PASSWORD || "change-me-now";
+const ADMIN_INITIAL_USERNAME = process.env.ADMIN_INITIAL_USERNAME || "admin";
 const WEBHOOK_SHARED_SECRET = process.env.WEBHOOK_SHARED_SECRET || "";
 const DATA_FILE = process.env.DATA_FILE || "webhook-mail-node.json";
 
@@ -45,8 +46,8 @@ function loadStore() {
       data = { ...data, ...JSON.parse(fs.readFileSync(DATA_FILE, "utf8")) };
     } catch {}
   }
-  if (!data.users.admin) {
-    data.users.admin = { username: "admin", password: hashPassword(ADMIN_INITIAL_PASSWORD), role: "admin", createdAt: nowIso() };
+  if (!data.users[ADMIN_INITIAL_USERNAME]) {
+    data.users[ADMIN_INITIAL_USERNAME] = { username: ADMIN_INITIAL_USERNAME, password: hashPassword(ADMIN_INITIAL_PASSWORD), role: "admin", createdAt: nowIso() };
     saveStore(data);
   }
   return data;
@@ -65,7 +66,7 @@ function page(title, body) {
 
 function loginPage(error = "") {
   const notice = error ? `<div class="notice error">${escapeHtml(error)}</div>` : "";
-  return page("webhook-mail 登入", `<section class="hero"><span class="badge">SINGLE FILE NODE</span><h1>webhook-mail 登入</h1><p>管理員帳號 admin，密碼來自 ADMIN_INITIAL_PASSWORD。</p></section>${notice}<section class="panel"><form method="post" action="/login"><label>帳號<input name="username" required></label><label>密碼<input name="password" type="password" required></label><button>登入</button></form></section>`);
+  return page("webhook-mail 登入", `<section class="hero"><span class="badge">SINGLE FILE NODE</span><h1>webhook-mail 登入</h1><p>管理員帳號來自 ADMIN_INITIAL_USERNAME，密碼來自 ADMIN_INITIAL_PASSWORD。</p></section>${notice}<section class="panel"><form method="post" action="/login"><label>帳號<input name="username" required></label><label>密碼<input name="password" type="password" required></label><button>登入</button></form></section>`);
 }
 
 function dashboard(session, flash = "") {
@@ -161,7 +162,7 @@ http.createServer(async (req, res) => {
     const form = querystring.parse(await readBody(req));
     const username = String(form.username || "").trim();
     const password = String(form.password || "");
-    if (username.length < 3 || username === "admin" || store.users[username] || password.length < 8) return send(res, 400, dashboard(session, "使用者名稱或密碼不合法"));
+    if (username.length < 3 || username === ADMIN_INITIAL_USERNAME || store.users[username] || password.length < 8) return send(res, 400, dashboard(session, "使用者名稱或密碼不合法"));
     store.users[username] = { username, password: hashPassword(password), role: "member", createdAt: nowIso() };
     saveStore(store);
     return send(res, 200, dashboard(session, `已建立普通用戶：${username}`));

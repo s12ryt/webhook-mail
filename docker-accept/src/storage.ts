@@ -29,7 +29,7 @@ export type StorageAdapter = {
   getSession(sessionId: string): Promise<SessionRecord | null>;
   createSession(sessionId: string, session: SessionRecord): Promise<void>;
   deleteSession(sessionId: string): Promise<void>;
-  ensureAdminAccount(password: string): Promise<UserAccount>;
+  ensureAdminAccount(username: string, password: string): Promise<UserAccount>;
   findUser(username: string): Promise<UserAccount | null>;
   updateUserPassword(username: string, password: string): Promise<void>;
   listUsers(): Promise<UserAccount[]>;
@@ -211,14 +211,14 @@ class MemoryStorage implements StorageAdapter {
     this.sessions.delete(sessionId);
   }
 
-  async ensureAdminAccount(password: string): Promise<UserAccount> {
-    const existing = this.users.get("admin");
+  async ensureAdminAccount(username: string, password: string): Promise<UserAccount> {
+    const existing = this.users.get(username);
     if (existing) {
       return existing;
     }
 
     const account: UserAccount = {
-      username: "admin",
+      username,
       password,
       role: "admin",
       createdAt: new Date().toISOString()
@@ -337,14 +337,14 @@ class MysqlStorage implements StorageAdapter {
     await this.pool.query("DELETE FROM sessions WHERE session_id = ?", [sessionId]);
   }
 
-  async ensureAdminAccount(password: string): Promise<UserAccount> {
-    const existing = await this.findUser("admin");
+  async ensureAdminAccount(username: string, password: string): Promise<UserAccount> {
+    const existing = await this.findUser(username);
     if (existing) {
       return existing;
     }
 
     const account: UserAccount = {
-      username: "admin",
+      username,
       password,
       role: "admin",
       createdAt: new Date().toISOString()
@@ -491,14 +491,14 @@ class PostgresStorage implements StorageAdapter {
     await this.pool.query("DELETE FROM sessions WHERE session_id = $1", [sessionId]);
   }
 
-  async ensureAdminAccount(password: string): Promise<UserAccount> {
-    const existing = await this.findUser("admin");
+  async ensureAdminAccount(username: string, password: string): Promise<UserAccount> {
+    const existing = await this.findUser(username);
     if (existing) {
       return existing;
     }
 
     const account: UserAccount = {
-      username: "admin",
+      username,
       password,
       role: "admin",
       createdAt: new Date().toISOString()
@@ -739,14 +739,14 @@ class GitHubStorage implements StorageAdapter {
     await this.deleteFile(this.filePath("sessions", `${sessionId}.json`));
   }
 
-  async ensureAdminAccount(password: string): Promise<UserAccount> {
-    const existing = await this.findUser("admin");
+  async ensureAdminAccount(username: string, password: string): Promise<UserAccount> {
+    const existing = await this.findUser(username);
     if (existing) {
       return existing;
     }
 
     const account: UserAccount = {
-      username: "admin",
+      username,
       password,
       role: "admin",
       createdAt: new Date().toISOString()

@@ -14,8 +14,8 @@ type RouteDeps = {
   config: RuntimeConfig;
 };
 
-async function ensureAdminAccount(storage: StorageAdapter, adminBootstrapPassword: string): Promise<UserAccount> {
-  return storage.ensureAdminAccount(await hashPassword(adminBootstrapPassword));
+async function ensureAdminAccount(storage: StorageAdapter, adminBootstrapUsername: string, adminBootstrapPassword: string): Promise<UserAccount> {
+  return storage.ensureAdminAccount(adminBootstrapUsername, await hashPassword(adminBootstrapPassword));
 }
 
 async function getSession(request: Request, storage: StorageAdapter): Promise<SessionRecord | null> {
@@ -40,8 +40,8 @@ async function verifyAndUpgradePassword(storage: StorageAdapter, account: UserAc
   return true;
 }
 
-async function authenticate(storage: StorageAdapter, adminBootstrapPassword: string, username: string, password: string): Promise<SessionRecord | null> {
-  const account = username === "admin" ? await ensureAdminAccount(storage, adminBootstrapPassword) : await storage.findUser(username);
+async function authenticate(storage: StorageAdapter, adminBootstrapUsername: string, adminBootstrapPassword: string, username: string, password: string): Promise<SessionRecord | null> {
+  const account = username === adminBootstrapUsername ? await ensureAdminAccount(storage, adminBootstrapUsername, adminBootstrapPassword) : await storage.findUser(username);
   if (!account || !(await verifyAndUpgradePassword(storage, account, password))) {
     return null;
   }
@@ -74,8 +74,8 @@ function normalizePayload(payload: Partial<EmailWebhookPayload>): EmailWebhookPa
   };
 }
 
-export async function initializeAdminAccount(storage: StorageAdapter, adminBootstrapPassword: string): Promise<void> {
-  await ensureAdminAccount(storage, adminBootstrapPassword);
+export async function initializeAdminAccount(storage: StorageAdapter, adminBootstrapUsername: string, adminBootstrapPassword: string): Promise<void> {
+  await ensureAdminAccount(storage, adminBootstrapUsername, adminBootstrapPassword);
 }
 
 export function registerRoutes(app: Express, deps: RouteDeps): void {
@@ -97,7 +97,7 @@ export function registerRoutes(app: Express, deps: RouteDeps): void {
   app.post("/login", async (request: Request, response: Response) => {
     const username = String(request.body.username ?? "").trim();
     const password = String(request.body.password ?? "");
-    const session = await authenticate(storage, config.adminBootstrapPassword, username, password);
+    const session = await authenticate(storage, config.adminBootstrapUsername, config.adminBootstrapPassword, username, password);
 
     if (!session) {
       response.status(401).type("html").send(renderLoginPage("帳號或密碼錯誤"));
@@ -184,7 +184,7 @@ export function registerRoutes(app: Express, deps: RouteDeps): void {
     const username = String(request.body.username ?? "").trim();
     const password = String(request.body.password ?? "");
 
-    if (!username || username === "admin" || username.length < 3) {
+    if (!username || username === config.adminBootstrapUsername || username.length < 3) {
       response.status(400).type("html").send(await renderDashboardPage({
         session,
         users: await storage.listUsers(),
