@@ -6,30 +6,23 @@ import express, { type Request, type Response } from "express";
 import { createStorageAdapter, getStorageDisplayMode } from "./storage.js";
 import type { EmailWebhookPayload, SessionRecord, UserAccount } from "./types.js";
 
-type GitHubUploadConfig = {
-  token: string;
-  owner: string;
-  repo: string;
-  branch: string;
-  path: string;
-  displayUrl: string;
-};
-
-type GitHubUploadResult = {
-  enabled: boolean;
-  path?: string;
-  url?: string;
-};
-
 const app = express();
 const port = Number(process.env.PORT ?? 3000);
 const sharedSecret = process.env.WEBHOOK_SHARED_SECRET;
 const adminBootstrapPassword = process.env.ADMIN_INITIAL_PASSWORD ?? "change-me-now";
 const mysqlConnection = process.env.MYSQL_URL ?? "";
 const postgresConnection = process.env.POSTGRES_URL ?? "";
-const githubConnection = buildGitHubConnection();
-const storageMode = getStorageDisplayMode(mysqlConnection, postgresConnection);
-const storage = createStorageAdapter(mysqlConnection, postgresConnection);
+const githubStorageInput = {
+  url: process.env.GITHUB_URL ?? "",
+  token: process.env.GITHUB_TOKEN ?? "",
+  owner: process.env.GITHUB_OWNER ?? "",
+  repo: process.env.GITHUB_REPO ?? "",
+  branch: process.env.GITHUB_BRANCH ?? "main",
+  path: process.env.GITHUB_PATH ?? "mail-events"
+};
+const githubConnection = buildGitHubConnection(githubStorageInput);
+const storageMode = getStorageDisplayMode(mysqlConnection, postgresConnection, githubStorageInput);
+const storage = createStorageAdapter(mysqlConnection, postgresConnection, githubStorageInput);
 const scrypt = promisify(scryptCallback);
 const PASSWORD_HASH_PREFIX = "scrypt";
 
@@ -74,110 +67,22 @@ function normalizeGitHubPath(value: string): string {
     .join("/");
 }
 
-function buildGitHubConnection(): string {
-  const explicitUrl = String(process.env.GITHUB_URL ?? "").trim();
+function buildGitHubConnection(input: { url: string; owner: string; repo: string; branch: string; path: string }): string {
+  const explicitUrl = String(input.url ?? "").trim();
   if (explicitUrl) {
     return explicitUrl;
   }
 
-  const owner = String(process.env.GITHUB_OWNER ?? "").trim();
-  const repo = String(process.env.GITHUB_REPO ?? "").trim();
-  const branch = String(process.env.GITHUB_BRANCH ?? "main").trim() || "main";
-  const path = normalizeGitHubPath(String(process.env.GITHUB_PATH ?? "mail-events"));
+  const owner = String(input.owner ?? "").trim();
+  const repo = String(input.repo ?? "").trim();
+  const branch = String(input.branch ?? "main").trim() || "main";
+  const path = normalizeGitHubPath(String(input.path ?? "mail-events"));
 
   if (!owner || !repo) {
     return "";
   }
 
   return `https://github.com/${owner}/${repo}/tree/${branch}/${path}`;
-}
-
-function getGitHubUploadConfig(): GitHubUploadConfig | null {
-  const explicitUrl = String(process.env.GITHUB_URL ?? "").trim();
-  const parsed = parseGitHubRepoUrl(explicitUrl);
-  const token = String(process.env.GITHUB_TOKEN ?? "").trim();
-  const owner = String(process.env.GITHUB_OWNER ?? parsed?.owner ?? "").trim();
-  const repo = String(process.env.GITHUB_REPO ?? parsed?.repo ?? "").trim();
-  const branch = String(process.env.GITHUB_BRANCH ?? "main").trim() || "main";
-  const path = normalizeGitHubPath(String(process.env.GITHUB_PATH ?? "mail-events")) || "mail-events";
-
-  if (!token && !owner && !repo && !explicitUrl) {
-    return null;
-  }
-
-  if (!token) {
-    throw new Error("Missing GITHUB_TOKEN for GitHub upload");
-  }
-
-  if (!owner || !repo) {
-    throw new Error("Missing GITHUB_OWNER / GITHUB_REPO (or a valid GITHUB_URL) for GitHub upload");
-  }
-
-  return {
-    token,
-    owner,
-    repo,
-    branch,
-    path,
-    displayUrl: explicitUrl || `https://github.com/${owner}/${repo}/tree/${branch}/${path}`
-  };
-}
-
-function buildGitHubMailPath(payload: EmailWebhookPayload, basePath: string): string {
-  const receivedDate = new Date(payload.receivedAt);
-  const year = Number.isNaN(receivedDate.getTime()) ? "unknown-year" : String(receivedDate.getUTCFullYear());
-  const month = Number.isNaN(receivedDate.getTime()) ? "unknown-month" : String(receivedDate.getUTCMonth() + 1).padStart(2, "0");
-  const day = Number.isNaN(receivedDate.getTime()) ? "unknown-day" : String(receivedDate.getUTCDate()).padStart(2, "0");
-  const timestamp = Number.isNaN(receivedDate.getTime()) ? Date.now() : receivedDate.getTime();
-  const messageId = normalizeMessageId(payload.messageId);
-
-  return `${basePath}/${year}/${month}/${day}/${timestamp}-${messageId}.json`;
-}
-
-async function uploadEmailToGitHub(payload: EmailWebhookPayload): Promise<GitHubUploadResult> {
-  const config = getGitHubUploadConfig();
-  if (!config) {
-    return { enabled: false };
-  }
-
-  const filePath = buildGitHubMailPath(payload, config.path);
-  const content = JSON.stringify(
-    {
-      storedAt: new Date().toISOString(),
-      source: "docker-accept",
-      payload
-    },
-    null,
-    2
-  );
-
-  const response = await fetch(`https://api.github.com/repos/${config.owner}/${config.repo}/contents/${filePath}`, {
-    method: "PUT",
-    headers: {
-      authorization: `Bearer ${config.token}`,
-      accept: "application/vnd.github+json",
-      "x-github-api-version": "2022-11-28",
-      "content-type": "application/json"
-    },
-    body: JSON.stringify({
-      message: `Store email ${payload.messageId}`,
-      content: Buffer.from(content, "utf8").toString("base64"),
-      branch: config.branch
-    })
-  });
-
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(`GitHub upload failed: ${response.status} ${detail}`);
-  }
-
-  const data = (await response.json()) as { content?: { html_url?: string } };
-
-  return {
-    enabled: true,
-    path: filePath,
-    url: data.content?.html_url ?? config.displayUrl
-  };
 }
 
 function parseCookies(request: Request): Record<string, string> {
@@ -554,11 +459,10 @@ app.post("/api/webhooks/email", async (request: Request, response: Response) => 
 
   try {
     await storage.storeEmailEvent(normalized);
-    const githubUpload = await uploadEmailToGitHub(normalized);
-    response.status(202).json({ ok: true, stored: await storage.countEmailEvents(), github: githubUpload, storage: storageMode });
+    response.status(202).json({ ok: true, stored: await storage.countEmailEvents(), storage: storageMode });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    response.status(502).json({ ok: false, error: "storage or github upload failed", detail, storage: storageMode });
+    response.status(502).json({ ok: false, error: "storage failed", detail, storage: storageMode });
   }
 });
 
