@@ -46,7 +46,7 @@ export function renderLoginPage(error?: string): string {
       <section class="hero">
         <div class="badge">SECURE ACCESS</div>
         <h1>黑藍風格登入入口</h1>
-        <p>管理員首次使用 <strong>ADMIN_INITIAL_PASSWORD</strong> 建立帳號，之後以帳號密碼登入；普通用戶不開放註冊，只能由管理員建立。</p>
+        <p>管理員首次使用 <strong>ADMIN_INITIAL_USERNAME</strong> 與 <strong>ADMIN_INITIAL_PASSWORD</strong> 建立帳號，之後以帳號密碼登入；普通用戶不開放註冊，只能由管理員建立。</p>
       </section>
       ${error ? `<div class="notice error">${escapeHtml(error)}</div>` : ""}
       <section class="panel" style="max-width: 520px;">
@@ -206,7 +206,7 @@ export function renderDashboardPage(options: {
           }
         </div>
       </section>
-      <div class="footer">webhook-mail · secure dashboard · admin bootstrap password consumed on first admin creation only.</div>
+      <div class="footer">webhook-mail · secure dashboard · admin bootstrap credentials consumed on first admin creation only.</div>
     `
   );
 }

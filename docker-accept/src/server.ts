@@ -26,7 +26,7 @@ registerRoutes(app, {
 
 storage
   .init()
-  .then(() => initializeAdminAccount(storage, runtime.adminBootstrapPassword))
+  .then(() => initializeAdminAccount(storage, runtime.adminBootstrapUsername, runtime.adminBootstrapPassword))
   .then(() => {
     app.listen(runtime.port, () => {
       console.log(`docker-accept listening on http://localhost:${runtime.port} (storage: ${storage.mode})`);
