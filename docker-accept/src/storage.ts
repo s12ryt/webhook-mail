@@ -1,0 +1,534 @@
+import mysql from "mysql2/promise";
+import pg from "pg";
+
+import type { EmailWebhookPayload, SessionRecord, UserAccount } from "./types.js";
+
+export type StorageMode = "memory" | "mysql" | "postgres";
+
+export type StorageAdapter = {
+  mode: StorageMode;
+  init(): Promise<void>;
+  getSession(sessionId: string): Promise<SessionRecord | null>;
+  createSession(sessionId: string, session: SessionRecord): Promise<void>;
+  deleteSession(sessionId: string): Promise<void>;
+  ensureAdminAccount(password: string): Promise<UserAccount>;
+  findUser(username: string): Promise<UserAccount | null>;
+  updateUserPassword(username: string, password: string): Promise<void>;
+  listUsers(): Promise<UserAccount[]>;
+  countUsers(): Promise<number>;
+  createUser(account: UserAccount): Promise<void>;
+  storeEmailEvent(payload: EmailWebhookPayload): Promise<void>;
+  listRecentEmailEvents(limit: number): Promise<EmailWebhookPayload[]>;
+  countEmailEvents(): Promise<number>;
+};
+
+type DbKind = "mysql" | "postgres";
+
+type StorageRow = {
+  username: string;
+  password: string;
+  role: string;
+  created_at: string;
+};
+
+type SessionRow = {
+  username: string;
+  role: string;
+  created_at: string;
+};
+
+type EmailEventRow = {
+  event: string;
+  message_id: string;
+  sender: string;
+  recipients_json: string;
+  raw_size: number;
+  subject: string;
+  headers_json: string;
+  text_preview: string;
+  raw_base64: string;
+  received_at: string;
+};
+
+function mapUserRow(row: StorageRow): UserAccount {
+  return {
+    username: row.username,
+    password: row.password,
+    role: row.role === "admin" ? "admin" : "member",
+    createdAt: row.created_at
+  };
+}
+
+function mapSessionRow(row: SessionRow): SessionRecord {
+  return {
+    username: row.username,
+    role: row.role === "admin" ? "admin" : "member",
+    createdAt: row.created_at
+  };
+}
+
+function mapEmailEventRow(row: EmailEventRow): EmailWebhookPayload {
+  return {
+    event: row.event,
+    messageId: row.message_id,
+    from: row.sender,
+    to: safeParseArray(row.recipients_json),
+    rawSize: Number(row.raw_size ?? 0),
+    subject: row.subject,
+    headers: safeParseRecord(row.headers_json),
+    textPreview: row.text_preview,
+    rawBase64: row.raw_base64,
+    receivedAt: row.received_at
+  };
+}
+
+function safeParseArray(value: string): string[] {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? parsed.map((item) => String(item)) : [];
+  } catch {
+    return [];
+  }
+}
+
+function safeParseRecord(value: string): Record<string, string> {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+
+    return Object.fromEntries(Object.entries(parsed).map(([key, item]) => [key, String(item)]));
+  } catch {
+    return {};
+  }
+}
+
+class MemoryStorage implements StorageAdapter {
+  public readonly mode = "memory" satisfies StorageMode;
+
+  private readonly events: EmailWebhookPayload[] = [];
+  private readonly users = new Map<string, UserAccount>();
+  private readonly sessions = new Map<string, SessionRecord>();
+
+  async init(): Promise<void> {}
+
+  async getSession(sessionId: string): Promise<SessionRecord | null> {
+    return this.sessions.get(sessionId) ?? null;
+  }
+
+  async createSession(sessionId: string, session: SessionRecord): Promise<void> {
+    this.sessions.set(sessionId, session);
+  }
+
+  async deleteSession(sessionId: string): Promise<void> {
+    this.sessions.delete(sessionId);
+  }
+
+  async ensureAdminAccount(password: string): Promise<UserAccount> {
+    const existing = this.users.get("admin");
+    if (existing) {
+      return existing;
+    }
+
+    const account: UserAccount = {
+      username: "admin",
+      password,
+      role: "admin",
+      createdAt: new Date().toISOString()
+    };
+
+    this.users.set(account.username, account);
+    return account;
+  }
+
+  async findUser(username: string): Promise<UserAccount | null> {
+    return this.users.get(username) ?? null;
+  }
+
+  async updateUserPassword(username: string, password: string): Promise<void> {
+    const existing = this.users.get(username);
+    if (!existing) {
+      return;
+    }
+
+    this.users.set(username, { ...existing, password });
+  }
+
+  async listUsers(): Promise<UserAccount[]> {
+    return Array.from(this.users.values()).sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  }
+
+  async countUsers(): Promise<number> {
+    return this.users.size;
+  }
+
+  async createUser(account: UserAccount): Promise<void> {
+    this.users.set(account.username, account);
+  }
+
+  async storeEmailEvent(payload: EmailWebhookPayload): Promise<void> {
+    this.events.unshift(payload);
+    this.events.splice(20);
+  }
+
+  async listRecentEmailEvents(limit: number): Promise<EmailWebhookPayload[]> {
+    return this.events.slice(0, limit);
+  }
+
+  async countEmailEvents(): Promise<number> {
+    return this.events.length;
+  }
+}
+
+class MysqlStorage implements StorageAdapter {
+  public readonly mode = "mysql" satisfies StorageMode;
+
+  private readonly pool: mysql.Pool;
+
+  constructor(connectionString: string) {
+    this.pool = mysql.createPool({
+      uri: connectionString,
+      connectionLimit: 10,
+      charset: "utf8mb4"
+    });
+  }
+
+  async init(): Promise<void> {
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        username VARCHAR(64) PRIMARY KEY,
+        password TEXT NOT NULL,
+        role VARCHAR(16) NOT NULL,
+        created_at VARCHAR(64) NOT NULL
+      )
+    `);
+
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS sessions (
+        session_id VARCHAR(128) PRIMARY KEY,
+        username VARCHAR(64) NOT NULL,
+        role VARCHAR(16) NOT NULL,
+        created_at VARCHAR(64) NOT NULL
+      )
+    `);
+
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS email_events (
+        message_id VARCHAR(255) PRIMARY KEY,
+        event VARCHAR(64) NOT NULL,
+        sender TEXT NOT NULL,
+        recipients_json LONGTEXT NOT NULL,
+        raw_size INT NOT NULL,
+        subject TEXT NOT NULL,
+        headers_json LONGTEXT NOT NULL,
+        text_preview LONGTEXT NOT NULL,
+        raw_base64 LONGTEXT NOT NULL,
+        received_at VARCHAR(64) NOT NULL,
+        stored_at VARCHAR(64) NOT NULL
+      )
+    `);
+  }
+
+  async getSession(sessionId: string): Promise<SessionRecord | null> {
+    const [rows] = await this.pool.query<mysql.RowDataPacket[]>(
+      "SELECT username, role, created_at FROM sessions WHERE session_id = ? LIMIT 1",
+      [sessionId]
+    );
+
+    const row = rows[0] as SessionRow | undefined;
+    return row ? mapSessionRow(row) : null;
+  }
+
+  async createSession(sessionId: string, session: SessionRecord): Promise<void> {
+    await this.pool.query(
+      "REPLACE INTO sessions (session_id, username, role, created_at) VALUES (?, ?, ?, ?)",
+      [sessionId, session.username, session.role, session.createdAt]
+    );
+  }
+
+  async deleteSession(sessionId: string): Promise<void> {
+    await this.pool.query("DELETE FROM sessions WHERE session_id = ?", [sessionId]);
+  }
+
+  async ensureAdminAccount(password: string): Promise<UserAccount> {
+    const existing = await this.findUser("admin");
+    if (existing) {
+      return existing;
+    }
+
+    const account: UserAccount = {
+      username: "admin",
+      password,
+      role: "admin",
+      createdAt: new Date().toISOString()
+    };
+
+    await this.createUser(account);
+    return account;
+  }
+
+  async findUser(username: string): Promise<UserAccount | null> {
+    const [rows] = await this.pool.query<mysql.RowDataPacket[]>(
+      "SELECT username, password, role, created_at FROM users WHERE username = ? LIMIT 1",
+      [username]
+    );
+
+    const row = rows[0] as StorageRow | undefined;
+    return row ? mapUserRow(row) : null;
+  }
+
+  async updateUserPassword(username: string, password: string): Promise<void> {
+    await this.pool.query("UPDATE users SET password = ? WHERE username = ?", [password, username]);
+  }
+
+  async listUsers(): Promise<UserAccount[]> {
+    const [rows] = await this.pool.query<mysql.RowDataPacket[]>(
+      "SELECT username, password, role, created_at FROM users ORDER BY created_at ASC"
+    );
+
+    return rows.map((row) => mapUserRow(row as StorageRow));
+  }
+
+  async countUsers(): Promise<number> {
+    const [rows] = await this.pool.query<mysql.RowDataPacket[]>("SELECT COUNT(*) AS total FROM users");
+    return Number((rows[0] as { total: number } | undefined)?.total ?? 0);
+  }
+
+  async createUser(account: UserAccount): Promise<void> {
+    await this.pool.query(
+      "INSERT INTO users (username, password, role, created_at) VALUES (?, ?, ?, ?)",
+      [account.username, account.password, account.role, account.createdAt]
+    );
+  }
+
+  async storeEmailEvent(payload: EmailWebhookPayload): Promise<void> {
+    await this.pool.query(
+      `REPLACE INTO email_events (
+        message_id, event, sender, recipients_json, raw_size, subject, headers_json, text_preview, raw_base64, received_at, stored_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        payload.messageId,
+        payload.event,
+        payload.from,
+        JSON.stringify(payload.to),
+        payload.rawSize,
+        payload.subject,
+        JSON.stringify(payload.headers),
+        payload.textPreview,
+        payload.rawBase64,
+        payload.receivedAt,
+        new Date().toISOString()
+      ]
+    );
+  }
+
+  async listRecentEmailEvents(limit: number): Promise<EmailWebhookPayload[]> {
+    const [rows] = await this.pool.query<mysql.RowDataPacket[]>(
+      "SELECT event, message_id, sender, recipients_json, raw_size, subject, headers_json, text_preview, raw_base64, received_at FROM email_events ORDER BY stored_at DESC LIMIT ?",
+      [limit]
+    );
+
+    return rows.map((row) => mapEmailEventRow(row as EmailEventRow));
+  }
+
+  async countEmailEvents(): Promise<number> {
+    const [rows] = await this.pool.query<mysql.RowDataPacket[]>("SELECT COUNT(*) AS total FROM email_events");
+    return Number((rows[0] as { total: number } | undefined)?.total ?? 0);
+  }
+}
+
+class PostgresStorage implements StorageAdapter {
+  public readonly mode = "postgres" satisfies StorageMode;
+
+  private readonly pool: pg.Pool;
+
+  constructor(connectionString: string) {
+    this.pool = new pg.Pool({ connectionString });
+  }
+
+  async init(): Promise<void> {
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        username VARCHAR(64) PRIMARY KEY,
+        password TEXT NOT NULL,
+        role VARCHAR(16) NOT NULL,
+        created_at VARCHAR(64) NOT NULL
+      )
+    `);
+
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS sessions (
+        session_id VARCHAR(128) PRIMARY KEY,
+        username VARCHAR(64) NOT NULL,
+        role VARCHAR(16) NOT NULL,
+        created_at VARCHAR(64) NOT NULL
+      )
+    `);
+
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS email_events (
+        message_id VARCHAR(255) PRIMARY KEY,
+        event VARCHAR(64) NOT NULL,
+        sender TEXT NOT NULL,
+        recipients_json TEXT NOT NULL,
+        raw_size INTEGER NOT NULL,
+        subject TEXT NOT NULL,
+        headers_json TEXT NOT NULL,
+        text_preview TEXT NOT NULL,
+        raw_base64 TEXT NOT NULL,
+        received_at VARCHAR(64) NOT NULL,
+        stored_at VARCHAR(64) NOT NULL
+      )
+    `);
+  }
+
+  async getSession(sessionId: string): Promise<SessionRecord | null> {
+    const result = await this.pool.query<SessionRow>(
+      "SELECT username, role, created_at FROM sessions WHERE session_id = $1 LIMIT 1",
+      [sessionId]
+    );
+
+    return result.rows[0] ? mapSessionRow(result.rows[0]) : null;
+  }
+
+  async createSession(sessionId: string, session: SessionRecord): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO sessions (session_id, username, role, created_at)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (session_id) DO UPDATE SET username = EXCLUDED.username, role = EXCLUDED.role, created_at = EXCLUDED.created_at`,
+      [sessionId, session.username, session.role, session.createdAt]
+    );
+  }
+
+  async deleteSession(sessionId: string): Promise<void> {
+    await this.pool.query("DELETE FROM sessions WHERE session_id = $1", [sessionId]);
+  }
+
+  async ensureAdminAccount(password: string): Promise<UserAccount> {
+    const existing = await this.findUser("admin");
+    if (existing) {
+      return existing;
+    }
+
+    const account: UserAccount = {
+      username: "admin",
+      password,
+      role: "admin",
+      createdAt: new Date().toISOString()
+    };
+
+    await this.createUser(account);
+    return account;
+  }
+
+  async findUser(username: string): Promise<UserAccount | null> {
+    const result = await this.pool.query<StorageRow>(
+      "SELECT username, password, role, created_at FROM users WHERE username = $1 LIMIT 1",
+      [username]
+    );
+
+    return result.rows[0] ? mapUserRow(result.rows[0]) : null;
+  }
+
+  async updateUserPassword(username: string, password: string): Promise<void> {
+    await this.pool.query("UPDATE users SET password = $1 WHERE username = $2", [password, username]);
+  }
+
+  async listUsers(): Promise<UserAccount[]> {
+    const result = await this.pool.query<StorageRow>(
+      "SELECT username, password, role, created_at FROM users ORDER BY created_at ASC"
+    );
+
+    return result.rows.map(mapUserRow);
+  }
+
+  async countUsers(): Promise<number> {
+    const result = await this.pool.query<{ total: string }>("SELECT COUNT(*) AS total FROM users");
+    return Number(result.rows[0]?.total ?? 0);
+  }
+
+  async createUser(account: UserAccount): Promise<void> {
+    await this.pool.query(
+      "INSERT INTO users (username, password, role, created_at) VALUES ($1, $2, $3, $4)",
+      [account.username, account.password, account.role, account.createdAt]
+    );
+  }
+
+  async storeEmailEvent(payload: EmailWebhookPayload): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO email_events (
+        message_id, event, sender, recipients_json, raw_size, subject, headers_json, text_preview, raw_base64, received_at, stored_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      ON CONFLICT (message_id) DO UPDATE SET
+        event = EXCLUDED.event,
+        sender = EXCLUDED.sender,
+        recipients_json = EXCLUDED.recipients_json,
+        raw_size = EXCLUDED.raw_size,
+        subject = EXCLUDED.subject,
+        headers_json = EXCLUDED.headers_json,
+        text_preview = EXCLUDED.text_preview,
+        raw_base64 = EXCLUDED.raw_base64,
+        received_at = EXCLUDED.received_at,
+        stored_at = EXCLUDED.stored_at`,
+      [
+        payload.messageId,
+        payload.event,
+        payload.from,
+        JSON.stringify(payload.to),
+        payload.rawSize,
+        payload.subject,
+        JSON.stringify(payload.headers),
+        payload.textPreview,
+        payload.rawBase64,
+        payload.receivedAt,
+        new Date().toISOString()
+      ]
+    );
+  }
+
+  async listRecentEmailEvents(limit: number): Promise<EmailWebhookPayload[]> {
+    const result = await this.pool.query<EmailEventRow>(
+      "SELECT event, message_id, sender, recipients_json, raw_size, subject, headers_json, text_preview, raw_base64, received_at FROM email_events ORDER BY stored_at DESC LIMIT $1",
+      [limit]
+    );
+
+    return result.rows.map(mapEmailEventRow);
+  }
+
+  async countEmailEvents(): Promise<number> {
+    const result = await this.pool.query<{ total: string }>("SELECT COUNT(*) AS total FROM email_events");
+    return Number(result.rows[0]?.total ?? 0);
+  }
+}
+
+export function createStorageAdapter(mysqlUrl: string, postgresUrl: string): StorageAdapter {
+  const hasMysql = Boolean(mysqlUrl.trim());
+  const hasPostgres = Boolean(postgresUrl.trim());
+
+  if (hasMysql && hasPostgres) {
+    throw new Error("MYSQL_URL and POSTGRES_URL cannot both be set at the same time");
+  }
+
+  if (hasMysql) {
+    return new MysqlStorage(mysqlUrl);
+  }
+
+  if (hasPostgres) {
+    return new PostgresStorage(postgresUrl);
+  }
+
+  return new MemoryStorage();
+}
+
+export function getStorageDisplayMode(mysqlUrl: string, postgresUrl: string): DbKind | "memory" {
+  if (mysqlUrl.trim()) {
+    return "mysql";
+  }
+
+  if (postgresUrl.trim()) {
+    return "postgres";
+  }
+
+  return "memory";
+}
