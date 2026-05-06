@@ -13,7 +13,8 @@ issue #12 要求提供 Python、Node.js、Java 的「單文件部署」版本。
 - `POST /api/webhooks/email`：接收郵件 webhook
 - `POST /api/users`：管理員建立普通用戶
 - `WEBHOOK_SHARED_SECRET`：若有設定，webhook 必須帶 `x-webhook-secret`
-- `ADMIN_INITIAL_PASSWORD`：管理員 `admin` 的初始密碼，預設 `change-me-now`
+- `ADMIN_INITIAL_USERNAME`：管理員初始帳號，預設 `admin`
+- `ADMIN_INITIAL_PASSWORD`：管理員初始密碼，預設 `change-me-now`
 - `DATA_FILE`：JSON 持久化檔案路徑，未設定時各版本會使用自己的預設檔名
 
 > 注意：單文件版本主打「快速部署」，儲存層使用本地 JSON 檔，不包含主專案 TypeScript 版的 MySQL / Postgres / GitHub 儲存後端。
@@ -33,6 +34,7 @@ python webhook_mail.py
 
 ```bash
 PORT=3000
+ADMIN_INITIAL_USERNAME=admin
 ADMIN_INITIAL_PASSWORD=change-this-password
 WEBHOOK_SHARED_SECRET=your-shared-secret
 DATA_FILE=webhook-mail-python.json
@@ -77,7 +79,7 @@ java WebhookMail
 登入控制台：
 
 - URL：`http://localhost:3000/login`
-- 帳號：`admin`
+- 帳號：`ADMIN_INITIAL_USERNAME`，預設 `admin`
 - 密碼：`ADMIN_INITIAL_PASSWORD`，預設 `change-me-now`
 
 送測試事件：
