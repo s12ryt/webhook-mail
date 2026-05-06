@@ -41,6 +41,16 @@ npm run dev -w docker-accept
 npm run dev -w worker-send
 ```
 
+## 單文件部署
+
+若不想使用完整 TypeScript / Docker 專案，`single-file/` 另外提供 issue #12 要求的單文件部署版本：
+
+- `single-file/python/webhook_mail.py`：Python 3.10+，無額外依賴
+- `single-file/node/webhook-mail.js`：Node.js 18+，無額外依賴
+- `single-file/java/WebhookMail.java`：JDK 17+，可直接 `java WebhookMail.java`
+
+這三個版本都內建簡易黑藍控制台、登入、管理員建立普通用戶、`/api/webhooks/email` 接收端與本地 JSON 持久化。詳細啟動方式請看 [`single-file/README.md`](single-file/README.md)。
+
 ## worker-send 環境變數
 
 - `DOCKER_ACCEPT_WEBHOOK_URL`：要接收郵件事件的 webhook 端點；支援以逗號分隔多個 URL
