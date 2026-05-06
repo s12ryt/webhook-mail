@@ -51,6 +51,33 @@ npm run dev -w worker-send
 
 這三個版本都內建簡易黑藍控制台、登入、管理員建立普通用戶、`/api/webhooks/email` 接收端與本地 JSON 持久化。詳細啟動方式請看 [`single-file/README.md`](single-file/README.md)。
 
+### 單文件快速啟動
+
+三個單文件版本都可使用相同的基礎環境變數：
+
+```bash
+PORT=3000
+ADMIN_INITIAL_USERNAME=admin
+ADMIN_INITIAL_PASSWORD=change-this-password
+WEBHOOK_SHARED_SECRET=your-shared-secret
+DATA_FILE=webhook-mail.json
+```
+
+依照想使用的語言啟動：
+
+```bash
+# Python 3.10+
+python single-file/python/webhook_mail.py
+
+# Node.js 18+
+node single-file/node/webhook-mail.js
+
+# JDK 17+
+java single-file/java/WebhookMail.java
+```
+
+單文件版本只使用標準庫或內建模組，不需要額外安裝依賴；資料會寫入本地 JSON 檔。若需要 MySQL、Postgres 或 GitHub 持久化後端，請使用完整的 `docker-accept/` TypeScript 版本。
+
 ## worker-send 環境變數
 
 - `DOCKER_ACCEPT_WEBHOOK_URL`：要接收郵件事件的 webhook 端點；支援以逗號分隔多個 URL
