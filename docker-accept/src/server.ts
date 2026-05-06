@@ -111,132 +111,133 @@ function authShell(title: string, content: string): string {
       <style>
         :root {
           color-scheme: dark;
-          --bg: #040812;
-          --panel: #0d1637;
-          --panel-2: #121f4e;
-          --text: #eef4ff;
-          --muted: #91a8d9;
-          --accent: #2ea7ff;
-          --accent-2: #6d7dff;
-          --border: rgba(109, 125, 255, 0.25);
-          --danger: #ff6b88;
-          --success: #49e6a5;
+          --bg: #020617;
+          --panel: #0f172a;
+          --panel-2: #1e293b;
+          --text: #f8fafc;
+          --muted: #94a3b8;
+          --accent: #38bdf8;
+          --accent-2: #818cf8;
+          --border: rgba(56, 189, 248, 0.2);
+          --danger: #f43f5e;
+          --success: #10b981;
         }
         * { box-sizing: border-box; }
         body {
           margin: 0;
-          font-family: Inter, "Noto Sans TC", system-ui, sans-serif;
-          background: radial-gradient(circle at top, #14306f 0%, var(--bg) 42%);
+          font-family: 'Inter', system-ui, sans-serif;
+          background-color: var(--bg);
           color: var(--text);
+          line-height: 1.5;
         }
-        a { color: var(--accent); text-decoration: none; }
+        a { color: var(--accent); text-decoration: none; transition: opacity 0.2s; }
+        a:hover { opacity: 0.8; }
         .wrap {
           max-width: 1200px;
           margin: 0 auto;
-          padding: 40px 20px 56px;
+          padding: 40px 20px;
         }
         .hero, .panel, .card, .field, .notice {
-          background: linear-gradient(180deg, rgba(21, 38, 94, 0.94), rgba(8, 14, 37, 0.98));
+          background: var(--panel);
           border: 1px solid var(--border);
-          border-radius: 20px;
-          box-shadow: 0 22px 60px rgba(0, 0, 0, 0.35);
+          border-radius: 16px;
+          box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
         }
-        .hero { padding: 28px; margin-bottom: 24px; }
-        .hero h1 { margin: 0 0 10px; font-size: clamp(2rem, 4vw, 3.2rem); }
-        .hero p { margin: 0; color: var(--muted); line-height: 1.7; }
+        .hero { padding: 32px; margin-bottom: 24px; }
+        .hero h1 { margin: 0 0 12px; font-size: 2.5rem; font-weight: 800; }
+        .hero p { margin: 0; color: var(--muted); font-size: 1.1rem; }
         .badge {
           display: inline-flex;
           align-items: center;
-          gap: 8px;
-          padding: 6px 12px;
+          gap: 6px;
+          padding: 4px 12px;
           border-radius: 999px;
-          background: linear-gradient(90deg, var(--accent), var(--accent-2));
-          color: #fff;
-          font-size: 0.8rem;
-          font-weight: 700;
-          letter-spacing: 0.04em;
+          background: rgba(56, 189, 248, 0.1);
+          color: var(--accent);
+          font-size: 0.75rem;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+          margin-bottom: 16px;
         }
         .grid {
           display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-          gap: 18px;
+          grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+          gap: 20px;
         }
-        .panel { padding: 20px; }
-        .panel h2, .panel h3 { margin-top: 0; }
-        .muted { color: var(--muted); }
-        .stats { display: grid; gap: 18px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin-bottom: 24px; }
-        .card { padding: 18px; }
-        .card .value { font-size: 1.7rem; font-weight: 800; margin-top: 10px; }
-        .card .label { color: var(--muted); font-size: 0.92rem; }
-        .list {
-          display: grid;
-          gap: 12px;
-        }
+        .panel { padding: 24px; }
+        .panel h2 { margin-top: 0; margin-bottom: 20px; font-size: 1.5rem; }
+        .stats { display: grid; gap: 20px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); margin-bottom: 24px; }
+        .card { padding: 20px; }
+        .card .value { font-size: 1.5rem; font-weight: 700; margin-top: 8px; }
+        .card .label { color: var(--muted); font-size: 0.875rem; }
+        .list { display: grid; gap: 16px; }
         .list-item {
-          padding: 14px 16px;
-          border-radius: 14px;
-          background: rgba(10, 18, 48, 0.74);
-          border: 1px solid rgba(46, 167, 255, 0.14);
+          padding: 16px;
+          border-radius: 12px;
+          background: var(--panel-2);
+          border: 1px solid var(--border);
         }
         .toolbar {
           display: flex;
           flex-wrap: wrap;
-          gap: 12px;
+          gap: 16px;
           align-items: center;
           justify-content: space-between;
-          margin-bottom: 18px;
+          margin-bottom: 20px;
         }
-        .toolbar form { margin: 0; }
         .button, button {
           appearance: none;
           border: 0;
-          border-radius: 12px;
-          padding: 12px 16px;
-          font-weight: 700;
+          border-radius: 8px;
+          padding: 10px 20px;
+          font-weight: 600;
           cursor: pointer;
           color: white;
-          background: linear-gradient(90deg, var(--accent), var(--accent-2));
+          background: var(--accent);
+          transition: background 0.2s;
         }
-        .button.secondary { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.12); }
+        .button:hover, button:hover { background: #0ea5e9; }
+        .button.secondary { background: var(--panel-2); border: 1px solid var(--border); }
+        .button.secondary:hover { background: #334155; }
         input, select {
           width: 100%;
           margin-top: 8px;
-          padding: 12px 14px;
-          border-radius: 12px;
-          border: 1px solid rgba(145, 168, 217, 0.22);
-          background: rgba(4, 10, 28, 0.88);
+          padding: 10px 12px;
+          border-radius: 8px;
+          border: 1px solid var(--border);
+          background: var(--bg);
           color: var(--text);
         }
-        label { display: block; margin-bottom: 14px; color: var(--muted); }
-        .field { padding: 18px; }
-        .notice { padding: 14px 16px; margin-bottom: 18px; }
-        .notice.error { border-color: rgba(255, 107, 136, 0.35); color: #ffd6df; }
-        .notice.success { border-color: rgba(73, 230, 165, 0.35); color: #d4ffef; }
+        input:focus { outline: 2px solid var(--accent); }
+        label { display: block; margin-bottom: 16px; color: var(--muted); font-size: 0.875rem; }
+        .notice { padding: 16px; margin-bottom: 20px; border-left: 4px solid; }
+        .notice.error { border-color: var(--danger); background: rgba(244, 63, 94, 0.1); }
+        .notice.success { border-color: var(--success); background: rgba(16, 185, 129, 0.1); }
         .muted-code {
           display: inline-block;
           margin-top: 8px;
-          padding: 8px 10px;
-          border-radius: 10px;
-          background: rgba(4, 10, 28, 0.88);
-          color: #cfe3ff;
-          border: 1px solid rgba(46, 167, 255, 0.15);
-          word-break: break-all;
+          padding: 4px 8px;
+          border-radius: 6px;
+          background: var(--bg);
+          color: var(--accent);
+          font-family: monospace;
+          font-size: 0.875rem;
         }
         table { width: 100%; border-collapse: collapse; }
-        th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid rgba(145, 168, 217, 0.16); }
+        th, td { text-align: left; padding: 12px; border-bottom: 1px solid var(--border); }
         pre {
           overflow: auto;
-          white-space: pre-wrap;
-          word-break: break-word;
-          padding: 14px;
-          border-radius: 12px;
-          background: rgba(4, 10, 28, 0.88);
-          border: 1px solid rgba(46, 167, 255, 0.15);
-          color: #d8e9ff;
+          padding: 16px;
+          border-radius: 8px;
+          background: var(--bg);
+          border: 1px solid var(--border);
+          color: var(--text);
+          font-size: 0.875rem;
         }
-        .footer { margin-top: 28px; color: var(--muted); font-size: 0.92rem; }
-        .split { display: grid; gap: 18px; grid-template-columns: 1.25fr 0.75fr; }
-        @media (max-width: 860px) { .split { grid-template-columns: 1fr; } }
+        .footer { margin-top: 40px; color: var(--muted); font-size: 0.875rem; text-align: center; }
+        .split { display: grid; gap: 24px; grid-template-columns: 1fr 1fr; }
+        @media (max-width: 768px) { .split { grid-template-columns: 1fr; } }
       </style>
     </head>
     <body>
