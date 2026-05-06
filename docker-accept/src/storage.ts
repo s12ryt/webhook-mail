@@ -3,7 +3,25 @@ import pg from "pg";
 
 import type { EmailWebhookPayload, SessionRecord, UserAccount } from "./types.js";
 
-export type StorageMode = "memory" | "mysql" | "postgres";
+export type StorageMode = "memory" | "mysql" | "postgres" | "github";
+
+export type GitHubStorageInput = {
+  url?: string;
+  token?: string;
+  owner?: string;
+  repo?: string;
+  branch?: string;
+  path?: string;
+};
+
+export type GitHubStorageConfig = {
+  token: string;
+  owner: string;
+  repo: string;
+  branch: string;
+  path: string;
+  displayUrl: string;
+};
 
 export type StorageAdapter = {
   mode: StorageMode;
@@ -102,6 +120,74 @@ function safeParseRecord(value: string): Record<string, string> {
   } catch {
     return {};
   }
+}
+
+function parseGitHubRepoUrl(value: string): { owner: string; repo: string } | null {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    const url = new URL(value);
+    const parts = url.pathname.split("/").filter(Boolean);
+    if (parts.length < 2) {
+      return null;
+    }
+
+    return {
+      owner: parts[0] ?? "",
+      repo: (parts[1] ?? "").replace(/\.git$/i, "")
+    };
+  } catch {
+    return null;
+  }
+}
+
+function normalizeGitHubPath(value: string): string {
+  return value
+    .split("/")
+    .map((segment) => segment.trim().replace(/^\/+|\/+$/g, ""))
+    .filter(Boolean)
+    .join("/");
+}
+
+function normalizeGitHubSegment(value: string): string {
+  return encodeURIComponent(value.trim());
+}
+
+function buildGitHubFilePath(...segments: string[]): string {
+  return segments.filter(Boolean).map((segment) => normalizeGitHubSegment(segment)).join("/");
+}
+
+export function resolveGitHubStorageConfig(input: GitHubStorageInput): GitHubStorageConfig | null {
+  const explicitUrl = String(input.url ?? "").trim();
+  const parsed = parseGitHubRepoUrl(explicitUrl);
+  const token = String(input.token ?? "").trim();
+  const owner = String(input.owner ?? parsed?.owner ?? "").trim();
+  const repo = String(input.repo ?? parsed?.repo ?? "").trim();
+  const branch = String(input.branch ?? "main").trim() || "main";
+  const path = normalizeGitHubPath(String(input.path ?? "mail-events")) || "mail-events";
+
+  if (!token && !owner && !repo && !explicitUrl) {
+    return null;
+  }
+
+  if (!token) {
+    throw new Error("Missing GITHUB_TOKEN for GitHub storage");
+  }
+
+  if (!owner || !repo) {
+    throw new Error("Missing GITHUB_OWNER / GITHUB_REPO (or a valid GITHUB_URL) for GitHub storage");
+  }
+
+  return {
+    token,
+    owner,
+    repo,
+    branch,
+    path,
+    displayUrl: explicitUrl || `https://github.com/${owner}/${repo}/tree/${branch}/${path}`
+  };
 }
 
 class MemoryStorage implements StorageAdapter {
@@ -502,12 +588,263 @@ class PostgresStorage implements StorageAdapter {
   }
 }
 
-export function createStorageAdapter(mysqlUrl: string, postgresUrl: string): StorageAdapter {
+type GitHubContentFile = {
+  type: "file";
+  path: string;
+  sha: string;
+  content?: string;
+  encoding?: string;
+};
+
+type GitHubContentDirectoryEntry = {
+  type: "file" | "dir" | "symlink" | "submodule";
+  path: string;
+  sha: string;
+};
+
+class GitHubStorage implements StorageAdapter {
+  public readonly mode = "github" satisfies StorageMode;
+
+  constructor(private readonly config: GitHubStorageConfig) {}
+
+  async init(): Promise<void> {}
+
+  private headers(): Record<string, string> {
+    return {
+      authorization: `Bearer ${this.config.token}`,
+      accept: "application/vnd.github+json",
+      "x-github-api-version": "2022-11-28",
+      "content-type": "application/json"
+    };
+  }
+
+  private filePath(...segments: string[]): string {
+    return buildGitHubFilePath(this.config.path, ...segments);
+  }
+
+  private async getContent(path: string): Promise<GitHubContentFile | null> {
+    const response = await fetch(`https://api.github.com/repos/${this.config.owner}/${this.config.repo}/contents/${path}?ref=${encodeURIComponent(this.config.branch)}`, {
+      method: "GET",
+      headers: this.headers()
+    });
+
+    if (response.status === 404) {
+      return null;
+    }
+
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(`GitHub read failed: ${response.status} ${detail}`);
+    }
+
+    const data = (await response.json()) as GitHubContentFile;
+    return data.type === "file" ? data : null;
+  }
+
+  private async listDirectory(path: string): Promise<GitHubContentDirectoryEntry[]> {
+    const response = await fetch(`https://api.github.com/repos/${this.config.owner}/${this.config.repo}/contents/${path}?ref=${encodeURIComponent(this.config.branch)}`, {
+      method: "GET",
+      headers: this.headers()
+    });
+
+    if (response.status === 404) {
+      return [];
+    }
+
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(`GitHub directory list failed: ${response.status} ${detail}`);
+    }
+
+    const data = (await response.json()) as GitHubContentDirectoryEntry | GitHubContentDirectoryEntry[];
+    return Array.isArray(data) ? data : [];
+  }
+
+  private async writeJson(path: string, payload: unknown): Promise<void> {
+    const existing = await this.getContent(path);
+    const body: Record<string, string> & { sha?: string } = {
+      message: `Update ${path}`,
+      content: Buffer.from(JSON.stringify(payload, null, 2), "utf8").toString("base64"),
+      branch: this.config.branch
+    };
+
+    if (existing?.sha) {
+      body.sha = existing.sha;
+    }
+
+    const response = await fetch(`https://api.github.com/repos/${this.config.owner}/${this.config.repo}/contents/${path}`, {
+      method: "PUT",
+      headers: this.headers(),
+      body: JSON.stringify(body)
+    });
+
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(`GitHub write failed: ${response.status} ${detail}`);
+    }
+  }
+
+  private async deleteFile(path: string): Promise<void> {
+    const existing = await this.getContent(path);
+    if (!existing?.sha) {
+      return;
+    }
+
+    const response = await fetch(`https://api.github.com/repos/${this.config.owner}/${this.config.repo}/contents/${path}`, {
+      method: "DELETE",
+      headers: this.headers(),
+      body: JSON.stringify({
+        message: `Delete ${path}`,
+        sha: existing.sha,
+        branch: this.config.branch
+      })
+    });
+
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(`GitHub delete failed: ${response.status} ${detail}`);
+    }
+  }
+
+  private decodeFileContent(file: GitHubContentFile): string {
+    if (!file.content) {
+      return "";
+    }
+
+    return Buffer.from(file.content.replace(/\n/g, ""), "base64").toString("utf8");
+  }
+
+  private async readJson<T>(path: string): Promise<T | null> {
+    const file = await this.getContent(path);
+    if (!file) {
+      return null;
+    }
+
+    try {
+      return JSON.parse(this.decodeFileContent(file)) as T;
+    } catch {
+      return null;
+    }
+  }
+
+  async getSession(sessionId: string): Promise<SessionRecord | null> {
+    return this.readJson<SessionRecord>(this.filePath("sessions", `${sessionId}.json`));
+  }
+
+  async createSession(sessionId: string, session: SessionRecord): Promise<void> {
+    await this.writeJson(this.filePath("sessions", `${sessionId}.json`), session);
+  }
+
+  async deleteSession(sessionId: string): Promise<void> {
+    await this.deleteFile(this.filePath("sessions", `${sessionId}.json`));
+  }
+
+  async ensureAdminAccount(password: string): Promise<UserAccount> {
+    const existing = await this.findUser("admin");
+    if (existing) {
+      return existing;
+    }
+
+    const account: UserAccount = {
+      username: "admin",
+      password,
+      role: "admin",
+      createdAt: new Date().toISOString()
+    };
+
+    await this.createUser(account);
+    return account;
+  }
+
+  async findUser(username: string): Promise<UserAccount | null> {
+    return this.readJson<UserAccount>(this.filePath("users", `${username}.json`));
+  }
+
+  async updateUserPassword(username: string, password: string): Promise<void> {
+    const user = await this.findUser(username);
+    if (!user) {
+      return;
+    }
+
+    await this.createUser({ ...user, password });
+  }
+
+  async listUsers(): Promise<UserAccount[]> {
+    const entries = await this.listDirectory(this.filePath("users"));
+    const users = await Promise.all(
+      entries
+        .filter((entry): entry is GitHubContentDirectoryEntry & { type: "file" } => entry.type === "file" && entry.path.endsWith(".json"))
+        .map(async (entry) => this.readJson<UserAccount>(entry.path))
+    );
+
+    return users.filter((item): item is UserAccount => Boolean(item)).sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  }
+
+  async countUsers(): Promise<number> {
+    const entries = await this.listDirectory(this.filePath("users"));
+    return entries.filter((entry) => entry.type === "file" && entry.path.endsWith(".json")).length;
+  }
+
+  async createUser(account: UserAccount): Promise<void> {
+    await this.writeJson(this.filePath("users", `${account.username}.json`), account);
+  }
+
+  async storeEmailEvent(payload: EmailWebhookPayload): Promise<void> {
+    const fileName = `${Date.now()}-${payload.messageId}.json`;
+    await this.writeJson(this.filePath("email_events", fileName), {
+      ...payload,
+      storedAt: new Date().toISOString()
+    });
+  }
+
+  async listRecentEmailEvents(limit: number): Promise<EmailWebhookPayload[]> {
+    const entries = await this.listDirectory(this.filePath("email_events"));
+    const events = await Promise.all(
+      entries
+        .filter((entry): entry is GitHubContentDirectoryEntry & { type: "file" } => entry.type === "file" && entry.path.endsWith(".json"))
+        .map(async (entry) => {
+          const item = await this.readJson<EmailWebhookPayload & { storedAt?: string }>(entry.path);
+          if (!item) {
+            return null;
+          }
+
+          return item;
+        })
+    );
+
+    return events
+      .filter((item): item is EmailWebhookPayload & { storedAt?: string } => Boolean(item))
+      .sort((left, right) => String((right as { storedAt?: string }).storedAt ?? right.receivedAt).localeCompare(String((left as { storedAt?: string }).storedAt ?? left.receivedAt)))
+      .slice(0, limit)
+      .map((item) => ({
+        event: item.event,
+        messageId: item.messageId,
+        from: item.from,
+        to: item.to,
+        rawSize: item.rawSize,
+        subject: item.subject,
+        headers: item.headers,
+        textPreview: item.textPreview,
+        rawBase64: item.rawBase64,
+        receivedAt: item.receivedAt
+      }));
+  }
+
+  async countEmailEvents(): Promise<number> {
+    const entries = await this.listDirectory(this.filePath("email_events"));
+    return entries.filter((entry) => entry.type === "file" && entry.path.endsWith(".json")).length;
+  }
+}
+
+export function createStorageAdapter(mysqlUrl: string, postgresUrl: string, githubInput: GitHubStorageInput = {}): StorageAdapter {
   const hasMysql = Boolean(mysqlUrl.trim());
   const hasPostgres = Boolean(postgresUrl.trim());
+  const githubConfig = resolveGitHubStorageConfig(githubInput);
+  const hasGithub = Boolean(githubConfig);
 
-  if (hasMysql && hasPostgres) {
-    throw new Error("MYSQL_URL and POSTGRES_URL cannot both be set at the same time");
+  const enabledCount = Number(hasMysql) + Number(hasPostgres) + Number(hasGithub);
+  if (enabledCount > 1) {
+    throw new Error("MYSQL_URL, POSTGRES_URL, and GITHUB_* can only choose one storage backend at a time");
   }
 
   if (hasMysql) {
@@ -518,16 +855,24 @@ export function createStorageAdapter(mysqlUrl: string, postgresUrl: string): Sto
     return new PostgresStorage(postgresUrl);
   }
 
+  if (githubConfig) {
+    return new GitHubStorage(githubConfig);
+  }
+
   return new MemoryStorage();
 }
 
-export function getStorageDisplayMode(mysqlUrl: string, postgresUrl: string): DbKind | "memory" {
+export function getStorageDisplayMode(mysqlUrl: string, postgresUrl: string, githubInput: GitHubStorageInput = {}): StorageMode {
   if (mysqlUrl.trim()) {
     return "mysql";
   }
 
   if (postgresUrl.trim()) {
     return "postgres";
+  }
+
+  if (resolveGitHubStorageConfig(githubInput)) {
+    return "github";
   }
 
   return "memory";
