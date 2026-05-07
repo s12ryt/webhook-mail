@@ -22,3 +22,4 @@
 - 2026-05-07：拉取最新 `main` 後檢查 bug，發現並修正 Node 單文件舊明文密碼比較可能丟出 `RangeError`、Java 單文件誤用 JDK 21 virtual thread API 導致不符合文件宣稱的 JDK 17+。
 - 2026-05-07：處理 issue #17，新增共用 `web-ui/`（manifest、HTML shell、CSS、JS），讓 `docker-accept` 與 Python/Node.js/Java 單文件版都透過 raw GitHub + 本機快取熱更新完整黑藍 UI，失敗時退回內建精簡頁面。
 - 2026-05-07：開始處理 issue #20，修正 GitHub 儲存郵件檔名碰撞、提升記憶體事件保留上限並記錄淘汰警告、將 `docker-accept` 未設定初始密碼時改為產生強隨機 bootstrap 密碼、將 webhook secret 比對改為安全比較、把 worker 預設 timeout 提高到 30 秒。
+- 2026-05-07：處理 issue #22，將 `secureCompare` 改為固定 SHA-256 digest 長度後再做 `timingSafeEqual`，補充 README 要保存首次啟動 log / 立即更換 bootstrap 密碼，並明確記錄 GitHub 郵件事件排序不依賴檔名格式。

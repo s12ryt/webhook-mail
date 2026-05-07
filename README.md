@@ -102,7 +102,7 @@ java single-file/java/WebhookMail.java
 - `PORT`：服務埠號，預設 `3000`
 - `WEBHOOK_SHARED_SECRET`：選填，若有設定則 webhook 需帶上相同 secret 才會接受
 - `ADMIN_INITIAL_USERNAME`：管理員首次登入使用的初始帳號，預設 `admin`
-- `ADMIN_INITIAL_PASSWORD`：管理員首次登入使用的初始密碼；未設定時 `docker-accept` 會在首次建立管理員時產生強隨機密碼並輸出到啟動 log
+- `ADMIN_INITIAL_PASSWORD`：管理員首次登入使用的初始密碼；未設定時 `docker-accept` 會在首次建立管理員時產生強隨機密碼並輸出到啟動 log。請部署者保存第一次啟動 log，或立即用該密碼登入後建立/更換持久化管理員憑證；若容器 log 被輪轉或遺失，系統不會再次顯示同一組一次性密碼
 - `MYSQL_URL`：選填，MySQL 持久化連線字串；與 `POSTGRES_URL`、`GITHUB_*` 三選一
 - `POSTGRES_URL`：選填，Postgres 持久化連線字串；與 `MYSQL_URL`、`GITHUB_*` 三選一
 - `GITHUB_URL`：選填，GitHub 持久化倉庫網址；若未提供 `GITHUB_OWNER` / `GITHUB_REPO`，系統會嘗試從這個 URL 解析
@@ -158,6 +158,7 @@ GITHUB_PATH=mail-events
 - 每筆資料都以 **JSON** 儲存
 - 郵件、帳號、session 都會各自寫成獨立 JSON 檔
 - GitHub 作為持久化後端時，`docker-accept` 不再只是「上傳附加功能」，而是與 MySQL / Postgres 並列的正式儲存方案
+- 郵件事件列表依 JSON 內容中的 `storedAt` / `receivedAt` 排序，不依賴檔名解析；issue #20 後新檔名會加入 `randomUUID()`，舊的 `Date.now()-messageId.json` 檔案可與新格式並存
 
 ## worker-send 投遞行為
 
