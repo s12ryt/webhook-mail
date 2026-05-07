@@ -14,3 +14,4 @@
 - 使用者指出登入需要帳號與密碼，但先前只提供 `ADMIN_INITIAL_PASSWORD` 可設定；已補 `ADMIN_INITIAL_USERNAME`，預設仍為 `admin`，主 TypeScript 版與 single-file 三版都需同步支援。
 - 2026-05-07 最新 main 檢查發現兩個實際 bug：`single-file/node/webhook-mail.js` 在驗證舊明文密碼時若輸入長度不同會因 `crypto.timingSafeEqual` 拋出 `RangeError`，已改為先檢查 buffer 長度；`single-file/java/WebhookMail.java` 宣稱 JDK 17+ 但使用 `Executors.newVirtualThreadPerTaskExecutor()`（JDK 21），已改為 JDK 17 可用的 `Executors.newCachedThreadPool()`。
 - issue #17 的 UI 策略：新增根目錄 `web-ui/` 作為 Docker 版與 single-file 三版共用 UI；執行時依 `WEB_UI_RAW_BASE` 下載 `manifest.json` 指定檔案，依 `WEB_UI_REFRESH_SECONDS` 做 TTL 熱更新，寫入 `WEB_UI_CACHE_DIR`，若遠端/快取失敗才退回內建 fallback HTML。
+- issue #20 安全/可靠性修正方向：GitHub 郵件事件檔名需含 `randomUUID()` 避免同毫秒覆寫；`docker-accept` webhook secret 以 `timingSafeEqual` 比對；未設定 `ADMIN_INITIAL_PASSWORD` 時只在首次建立 admin 帳號時印出強隨機 bootstrap 密碼；記憶體模式預設保留 1000 封並支援 `MEMORY_EVENT_LIMIT`；worker 預設 webhook timeout 調為 30000ms。

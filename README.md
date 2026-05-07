@@ -95,14 +95,14 @@ java single-file/java/WebhookMail.java
 
 - `DOCKER_ACCEPT_WEBHOOK_URL`：要接收郵件事件的 webhook 端點；支援以逗號分隔多個 URL
 - `WEBHOOK_SHARED_SECRET`：選填，若有設定會在 request header 帶上 `x-webhook-secret`
-- `WEBHOOK_TIMEOUT_MS`：選填，worker 投遞 webhook 的 timeout，預設 `10000`
+- `WEBHOOK_TIMEOUT_MS`：選填，worker 投遞 webhook 的 timeout，預設 `30000`
 
 ## docker-accept 環境變數
 
 - `PORT`：服務埠號，預設 `3000`
 - `WEBHOOK_SHARED_SECRET`：選填，若有設定則 webhook 需帶上相同 secret 才會接受
 - `ADMIN_INITIAL_USERNAME`：管理員首次登入使用的初始帳號，預設 `admin`
-- `ADMIN_INITIAL_PASSWORD`：管理員首次登入使用的初始密碼，預設 `change-me-now`
+- `ADMIN_INITIAL_PASSWORD`：管理員首次登入使用的初始密碼；未設定時 `docker-accept` 會在首次建立管理員時產生強隨機密碼並輸出到啟動 log
 - `MYSQL_URL`：選填，MySQL 持久化連線字串；與 `POSTGRES_URL`、`GITHUB_*` 三選一
 - `POSTGRES_URL`：選填，Postgres 持久化連線字串；與 `MYSQL_URL`、`GITHUB_*` 三選一
 - `GITHUB_URL`：選填，GitHub 持久化倉庫網址；若未提供 `GITHUB_OWNER` / `GITHUB_REPO`，系統會嘗試從這個 URL 解析
@@ -114,6 +114,7 @@ java single-file/java/WebhookMail.java
 - `WEB_UI_RAW_BASE`：選填，web-ui raw 檔案基底 URL，預設 `https://raw.githubusercontent.com/s12ryt/webhook-mail/main/web-ui`
 - `WEB_UI_REFRESH_SECONDS`：選填，web-ui 熱更新檢查間隔秒數，預設 `30`
 - `WEB_UI_CACHE_DIR`：選填，web-ui 快取目錄，預設 `.web-ui-cache`
+- `MEMORY_EVENT_LIMIT`：選填，記憶體模式保留的郵件事件數，預設 `1000`；超過時會記錄 warning 並淘汰最舊事件
 
 ### docker-accept 持久化模式
 
