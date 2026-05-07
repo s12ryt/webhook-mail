@@ -10,6 +10,7 @@ import os
 import secrets
 import time
 import urllib.parse
+import urllib.request
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -21,6 +22,10 @@ ADMIN_INITIAL_PASSWORD = os.getenv("ADMIN_INITIAL_PASSWORD", "change-me-now")
 ADMIN_INITIAL_USERNAME = os.getenv("ADMIN_INITIAL_USERNAME", "admin")
 WEBHOOK_SHARED_SECRET = os.getenv("WEBHOOK_SHARED_SECRET", "")
 DATA_FILE = Path(os.getenv("DATA_FILE", "webhook-mail-python.json"))
+WEB_UI_RAW_BASE = os.getenv("WEB_UI_RAW_BASE", "https://raw.githubusercontent.com/s12ryt/webhook-mail/main/web-ui").rstrip("/")
+WEB_UI_REFRESH_SECONDS = int(os.getenv("WEB_UI_REFRESH_SECONDS", "30"))
+WEB_UI_CACHE_DIR = Path(os.getenv("WEB_UI_CACHE_DIR", ".web-ui-cache"))
+web_ui_last_checked_at = 0.0
 
 
 def now_iso() -> str:
@@ -118,16 +123,64 @@ class Store:
 store = Store(DATA_FILE)
 
 
-def page(title: str, body: str) -> bytes:
+def fallback_page(title: str, body: str) -> bytes:
     css = """
     body{margin:0;background:#06111f;color:#dbeafe;font-family:system-ui,Segoe UI,sans-serif}.wrap{max-width:1100px;margin:auto;padding:32px}.hero,.panel,.card{background:#0b1930;border:1px solid #1d4ed8;border-radius:18px;padding:22px;margin:16px 0;box-shadow:0 0 30px #0ea5e933}h1{color:#93c5fd}.badge{display:inline-block;background:#0f2f62;color:#bfdbfe;border:1px solid #2563eb;border-radius:999px;padding:4px 10px;font-size:12px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}.value{font-size:30px;font-weight:800;color:#60a5fa}input,button{width:100%;box-sizing:border-box;padding:11px;margin:7px 0;border-radius:10px;border:1px solid #2563eb;background:#081426;color:#e0f2fe}button{cursor:pointer;background:#2563eb;font-weight:700}.secondary{background:#172554}table{width:100%;border-collapse:collapse}td,th{border-bottom:1px solid #1e3a8a;padding:8px;text-align:left}pre{white-space:pre-wrap;background:#020617;padding:12px;border-radius:10px}.notice{padding:12px;border-radius:12px}.error{background:#7f1d1d}.success{background:#14532d}.toolbar{display:flex;justify-content:space-between;gap:12px;align-items:center}.muted{color:#93a4bd}
     """
     return f"<!doctype html><html lang='zh-Hant'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{html.escape(title)}</title><style>{css}</style></head><body><main class='wrap'>{body}</main></body></html>".encode()
 
 
+def fetch_text(url: str) -> str:
+    request = urllib.request.Request(url, headers={"User-Agent": "webhook-mail-python-single-file"})
+    with urllib.request.urlopen(request, timeout=10) as response:
+        if response.status < 200 or response.status >= 300:
+            raise RuntimeError(f"HTTP {response.status} while fetching {url}")
+        return response.read().decode("utf-8")
+
+
+def refresh_web_ui() -> None:
+    global web_ui_last_checked_at
+    now = time.time()
+    if now - web_ui_last_checked_at < WEB_UI_REFRESH_SECONDS:
+        return
+    web_ui_last_checked_at = now
+    try:
+        WEB_UI_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        manifest = json.loads(fetch_text(f"{WEB_UI_RAW_BASE}/manifest.json"))
+        cached_manifest_path = WEB_UI_CACHE_DIR / "manifest.json"
+        cached_version = ""
+        if cached_manifest_path.exists():
+            try:
+                cached_version = json.loads(cached_manifest_path.read_text(encoding="utf-8")).get("version", "")
+            except Exception:
+                cached_version = ""
+        if cached_version == manifest.get("version") and all((WEB_UI_CACHE_DIR / name).exists() for name in manifest.get("files", [])):
+            return
+        for name in manifest.get("files", []):
+            if "/" in name or "\\" in name or name.startswith("."):
+                continue
+            (WEB_UI_CACHE_DIR / name).write_text(fetch_text(f"{WEB_UI_RAW_BASE}/{urllib.parse.quote(name)}"), encoding="utf-8")
+        cached_manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as error:
+        print(f"[web-ui] refresh failed: {error}")
+
+
+def page(title: str, data: dict[str, Any], fallback_html: bytes) -> bytes:
+    refresh_web_ui()
+    try:
+        template = (WEB_UI_CACHE_DIR / "index.html").read_text(encoding="utf-8")
+        style = (WEB_UI_CACHE_DIR / "style.css").read_text(encoding="utf-8")
+        script = (WEB_UI_CACHE_DIR / "app.js").read_text(encoding="utf-8")
+        payload = json.dumps(data, ensure_ascii=False).replace("<", "\\u003c")
+        return template.replace("{{TITLE}}", html.escape(title)).replace("{{STYLE_CSS}}", style).replace("{{APP_DATA_JSON}}", payload).replace("{{APP_JS}}", script).encode()
+    except Exception:
+        return fallback_html
+
+
 def login_page(error: str = "") -> bytes:
     notice = f"<div class='notice error'>{html.escape(error)}</div>" if error else ""
-    return page("webhook-mail 登入", f"<section class='hero'><span class='badge'>SINGLE FILE PYTHON</span><h1>webhook-mail 登入</h1><p>管理員帳號來自 ADMIN_INITIAL_USERNAME，密碼來自 ADMIN_INITIAL_PASSWORD。</p></section>{notice}<section class='panel'><form method='post' action='/login'><label>帳號<input name='username' required></label><label>密碼<input name='password' type='password' required></label><button>登入</button></form></section>")
+    fallback = fallback_page("webhook-mail 登入", f"<section class='hero'><span class='badge'>SINGLE FILE PYTHON</span><h1>webhook-mail 登入</h1><p>管理員帳號來自 ADMIN_INITIAL_USERNAME，密碼來自 ADMIN_INITIAL_PASSWORD。</p></section>{notice}<section class='panel'><form method='post' action='/login'><label>帳號<input name='username' required></label><label>密碼<input name='password' type='password' required></label><button>登入</button></form></section>")
+    return page("webhook-mail 登入", {"page": "login", "error": error}, fallback)
 
 
 def dashboard(session: dict[str, Any], flash: str = "") -> bytes:
@@ -139,7 +192,16 @@ def dashboard(session: dict[str, Any], flash: str = "") -> bytes:
     admin_tools = ""
     if session.get("role") == "admin":
         admin_tools = f"<section class='panel'><h2>管理員操作</h2><div class='grid'><form method='post' action='/api/users'><label>新帳號<input name='username' minlength='3' required></label><label>初始密碼<input name='password' minlength='8' required></label><button>建立普通用戶</button></form><div><h3>目前帳號</h3><table><thead><tr><th>帳號</th><th>角色</th><th>建立時間</th></tr></thead><tbody>{user_rows}</tbody></table></div></div></section>"
-    return page("webhook-mail 控制台", f"<section class='hero'><span class='badge'>BLACK + BLUE UI</span><h1>webhook-mail 單文件控制台</h1><p>目前登入：{html.escape(session.get('username',''))}</p><form method='post' action='/logout'><button class='secondary'>登出</button></form></section>{notice}<section class='grid'><article class='card'><div>收到事件</div><div class='value'>{len(store.data['events'])}</div></article><article class='card'><div>帳號數</div><div class='value'>{len(users)}</div></article><article class='card'><div>儲存</div><div class='value'>JSON</div><div class='muted'>{html.escape(str(DATA_FILE))}</div></article></section>{admin_tools}<section><h2>最近 webhook</h2>{event_items}</section>")
+    fallback = fallback_page("webhook-mail 控制台", f"<section class='hero'><span class='badge'>BLACK + BLUE UI</span><h1>webhook-mail 單文件控制台</h1><p>目前登入：{html.escape(session.get('username',''))}</p><form method='post' action='/logout'><button class='secondary'>登出</button></form></section>{notice}<section class='grid'><article class='card'><div>收到事件</div><div class='value'>{len(store.data['events'])}</div></article><article class='card'><div>帳號數</div><div class='value'>{len(users)}</div></article><article class='card'><div>儲存</div><div class='value'>JSON</div><div class='muted'>{html.escape(str(DATA_FILE))}</div></article></section>{admin_tools}<section><h2>最近 webhook</h2>{event_items}</section>")
+    return page("webhook-mail 控制台", {
+        "page": "dashboard",
+        "session": session,
+        "users": users,
+        "receivedEvents": events,
+        "stats": {"userCount": len(users), "eventCount": len(store.data["events"]), "storageMode": "json"},
+        "connections": {},
+        "flash": {"kind": "success", "message": flash} if flash else None,
+    }, fallback)
 
 
 class Handler(BaseHTTPRequestHandler):

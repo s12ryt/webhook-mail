@@ -16,8 +16,20 @@ issue #12 要求提供 Python、Node.js、Java 的「單文件部署」版本。
 - `ADMIN_INITIAL_USERNAME`：管理員初始帳號，預設 `admin`
 - `ADMIN_INITIAL_PASSWORD`：管理員初始密碼，預設 `change-me-now`
 - `DATA_FILE`：JSON 持久化檔案路徑，未設定時各版本會使用自己的預設檔名
+- `WEB_UI_RAW_BASE`：共用 `web-ui` raw 檔案基底 URL，預設 `https://raw.githubusercontent.com/s12ryt/webhook-mail/main/web-ui`
+- `WEB_UI_REFRESH_SECONDS`：檢查 `web-ui` 更新的間隔秒數，預設 `30`
+- `WEB_UI_CACHE_DIR`：下載後的 `web-ui` 快取目錄，預設 `.web-ui-cache`
 
 > 注意：單文件版本主打「快速部署」，儲存層使用本地 JSON 檔，不包含主專案 TypeScript 版的 MySQL / Postgres / GitHub 儲存後端。
+
+## 共用 HTML 與熱更新
+
+issue #17 起，三個單文件版本不再只輸出內建精簡 HTML，而是會在請求頁面時定期下載倉庫的 `web-ui/manifest.json`、`index.html`、`style.css`、`app.js`，並以同一套黑藍完整 UI 渲染登入頁與控制台。
+
+- 預設來源：`https://raw.githubusercontent.com/s12ryt/webhook-mail/main/web-ui`
+- 預設快取：目前工作目錄下的 `.web-ui-cache/`
+- 預設檢查間隔：30 秒
+- 若網路或遠端檔案失敗，會使用本機快取；若連快取也不存在，才退回單文件內建精簡頁面。
 
 ## Python
 
@@ -38,6 +50,7 @@ ADMIN_INITIAL_USERNAME=admin
 ADMIN_INITIAL_PASSWORD=change-this-password
 WEBHOOK_SHARED_SECRET=your-shared-secret
 DATA_FILE=webhook-mail-python.json
+WEB_UI_REFRESH_SECONDS=30
 python webhook_mail.py
 ```
 

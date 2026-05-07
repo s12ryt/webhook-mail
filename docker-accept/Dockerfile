@@ -5,6 +5,7 @@ COPY docker-accept/package.json ./docker-accept/package.json
 COPY worker-send/package.json ./worker-send/package.json
 RUN npm install
 COPY docker-accept ./docker-accept
+COPY web-ui ./web-ui
 RUN npm run build -w docker-accept
 
 FROM node:24-alpine AS runtime
@@ -13,5 +14,7 @@ ENV NODE_ENV=production
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/docker-accept/package.json ./package.json
 COPY --from=build /app/docker-accept/dist ./dist
+COPY --from=build /app/docker-accept/public ./public
+COPY --from=build /app/web-ui ./web-ui
 EXPOSE 3000
 CMD ["node", "dist/server.js"]
