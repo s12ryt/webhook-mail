@@ -1,5 +1,6 @@
 import type { EmailWebhookPayload, SessionRecord, UserAccount } from "./types.js";
 import type { StorageMode } from "./storage.js";
+import { renderWebUiPage, type WebUiConfig } from "./web-ui.js";
 
 function escapeHtml(value: string): string {
   return value
@@ -39,7 +40,7 @@ function authShell(title: string, content: string): string {
   </html>`;
 }
 
-export function renderLoginPage(error?: string): string {
+function renderFallbackLoginPage(error?: string): string {
   return authShell(
     "webhook-mail 登入",
     `
@@ -65,6 +66,15 @@ export function renderLoginPage(error?: string): string {
   );
 }
 
+export async function renderLoginPage(webUi: WebUiConfig, error?: string): Promise<string> {
+  return renderWebUiPage(
+    webUi,
+    "webhook-mail 登入",
+    { page: "login", error },
+    () => renderFallbackLoginPage(error)
+  );
+}
+
 export function renderConnectionCard(title: string, value: string): string {
   return `
     <article class="card">
@@ -75,7 +85,8 @@ export function renderConnectionCard(title: string, value: string): string {
   `;
 }
 
-export function renderDashboardPage(options: {
+type DashboardOptions = {
+  webUi: WebUiConfig;
   session: SessionRecord;
   users: UserAccount[];
   receivedEvents: EmailWebhookPayload[];
@@ -86,7 +97,9 @@ export function renderDashboardPage(options: {
   postgresConnection: string;
   githubConnection: string;
   flash?: { kind: "success" | "error"; message: string; detail?: string };
-}): string {
+};
+
+function renderFallbackDashboardPage(options: DashboardOptions): string {
   const { session, users, receivedEvents, userCount, eventCount, storageMode, mysqlConnection, postgresConnection, githubConnection, flash } = options;
   const admin = session.role === "admin";
 
@@ -208,5 +221,23 @@ export function renderDashboardPage(options: {
       </section>
       <div class="footer">webhook-mail · secure dashboard · admin bootstrap credentials consumed on first admin creation only.</div>
     `
+  );
+}
+
+export async function renderDashboardPage(options: DashboardOptions): Promise<string> {
+  const { webUi, session, users, receivedEvents, userCount, eventCount, storageMode, mysqlConnection, postgresConnection, githubConnection, flash } = options;
+  return renderWebUiPage(
+    webUi,
+    "webhook-mail 儀表板",
+    {
+      page: "dashboard",
+      session,
+      users,
+      receivedEvents,
+      stats: { userCount, eventCount, storageMode },
+      connections: { mysqlConnection, postgresConnection, githubConnection },
+      flash
+    },
+    () => renderFallbackDashboardPage(options)
   );
 }

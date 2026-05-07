@@ -49,10 +49,10 @@ async function authenticate(storage: StorageAdapter, adminBootstrapUsername: str
   return { username: account.username, role: account.role, createdAt: new Date().toISOString() };
 }
 
-async function requireAdmin(request: Request, response: Response, storage: StorageAdapter): Promise<SessionRecord | null> {
+async function requireAdmin(request: Request, response: Response, storage: StorageAdapter, config: RuntimeConfig): Promise<SessionRecord | null> {
   const session = await getSession(request, storage);
   if (!session || session.role !== "admin") {
-    response.status(403).type("html").send(renderLoginPage("需要管理員權限"));
+    response.status(403).type("html").send(await renderLoginPage(config.webUi, "需要管理員權限"));
     return null;
   }
 
@@ -91,7 +91,7 @@ export function registerRoutes(app: Express, deps: RouteDeps): void {
       return;
     }
 
-    response.type("html").send(renderLoginPage());
+    response.type("html").send(await renderLoginPage(config.webUi));
   });
 
   app.post("/login", async (request: Request, response: Response) => {
@@ -100,7 +100,7 @@ export function registerRoutes(app: Express, deps: RouteDeps): void {
     const session = await authenticate(storage, config.adminBootstrapUsername, config.adminBootstrapPassword, username, password);
 
     if (!session) {
-      response.status(401).type("html").send(renderLoginPage("帳號或密碼錯誤"));
+      response.status(401).type("html").send(await renderLoginPage(config.webUi, "帳號或密碼錯誤"));
       return;
     }
 
@@ -108,6 +108,7 @@ export function registerRoutes(app: Express, deps: RouteDeps): void {
     await storage.createSession(sessionId, session);
     response.cookie("webhook_mail_session", sessionId, { httpOnly: true, sameSite: "lax" });
     response.type("html").send(await renderDashboardPage({
+      webUi: config.webUi,
       session,
       users: await storage.listUsers(),
       receivedEvents: await storage.listRecentEmailEvents(20),
@@ -139,6 +140,7 @@ export function registerRoutes(app: Express, deps: RouteDeps): void {
     }
 
     response.type("html").send(await renderDashboardPage({
+      webUi: config.webUi,
       session,
       users: await storage.listUsers(),
       receivedEvents: await storage.listRecentEmailEvents(20),
@@ -176,7 +178,7 @@ export function registerRoutes(app: Express, deps: RouteDeps): void {
   });
 
   app.post("/api/users", async (request: Request, response: Response) => {
-    const session = await requireAdmin(request, response, storage);
+    const session = await requireAdmin(request, response, storage, config);
     if (!session) {
       return;
     }
@@ -186,6 +188,7 @@ export function registerRoutes(app: Express, deps: RouteDeps): void {
 
     if (!username || username === config.adminBootstrapUsername || username.length < 3) {
       response.status(400).type("html").send(await renderDashboardPage({
+        webUi: config.webUi,
         session,
         users: await storage.listUsers(),
         receivedEvents: await storage.listRecentEmailEvents(20),
@@ -202,6 +205,7 @@ export function registerRoutes(app: Express, deps: RouteDeps): void {
 
     if (await storage.findUser(username)) {
       response.status(409).type("html").send(await renderDashboardPage({
+        webUi: config.webUi,
         session,
         users: await storage.listUsers(),
         receivedEvents: await storage.listRecentEmailEvents(20),
@@ -218,6 +222,7 @@ export function registerRoutes(app: Express, deps: RouteDeps): void {
 
     if (password.length < 8) {
       response.status(400).type("html").send(await renderDashboardPage({
+        webUi: config.webUi,
         session,
         users: await storage.listUsers(),
         receivedEvents: await storage.listRecentEmailEvents(20),
@@ -240,6 +245,7 @@ export function registerRoutes(app: Express, deps: RouteDeps): void {
     });
 
     response.type("html").send(await renderDashboardPage({
+      webUi: config.webUi,
       session,
       users: await storage.listUsers(),
       receivedEvents: await storage.listRecentEmailEvents(20),

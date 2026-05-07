@@ -10,6 +10,11 @@ export type RuntimeConfig = {
   githubStorageInput: GitHubStorageInput;
   githubConnection: string;
   storageMode: StorageMode;
+  webUi: {
+    rawBase: string;
+    refreshSeconds: number;
+    cacheDir: string;
+  };
 };
 
 function normalizeGitHubPath(value: string): string {
@@ -57,6 +62,11 @@ export function loadRuntimeConfig(storageMode: StorageMode): RuntimeConfig {
     postgresConnection: process.env.POSTGRES_URL ?? "",
     githubStorageInput,
     githubConnection: buildGitHubConnection(githubStorageInput),
-    storageMode
+    storageMode,
+    webUi: {
+      rawBase: process.env.WEB_UI_RAW_BASE ?? "https://raw.githubusercontent.com/s12ryt/webhook-mail/main/web-ui",
+      refreshSeconds: Number(process.env.WEB_UI_REFRESH_SECONDS ?? 30),
+      cacheDir: process.env.WEB_UI_CACHE_DIR ?? ".web-ui-cache"
+    }
   };
 }
