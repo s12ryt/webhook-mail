@@ -1,4 +1,4 @@
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 
 import type { Express, Request, Response } from "express";
 
@@ -43,7 +43,11 @@ async function verifyAndUpgradePassword(storage: StorageAdapter, account: UserAc
 function secureCompare(left: string, right: string): boolean {
   const leftBuffer = Buffer.from(left);
   const rightBuffer = Buffer.from(right);
-  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+  const leftDigest = createHash("sha256").update(leftBuffer).digest();
+  const rightDigest = createHash("sha256").update(rightBuffer).digest();
+  const valuesMatch = timingSafeEqual(leftDigest, rightDigest);
+
+  return valuesMatch && leftBuffer.length === rightBuffer.length;
 }
 
 async function authenticate(storage: StorageAdapter, adminBootstrapUsername: string, adminBootstrapPassword: string, username: string, password: string): Promise<SessionRecord | null> {
