@@ -1,0 +1,9 @@
+{
+  "version": "2026-05-07-issue-17-001",
+  "entry": "index.html",
+  "files": [
+    "index.html",
+    "style.css",
+    "app.js"
+  ]
+}
