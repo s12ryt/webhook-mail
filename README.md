@@ -11,6 +11,8 @@
 .
 ├─ worker-send/
 ├─ docker-accept/
+├─ web-ui/
+├─ single-file/
 ├─ agent/
 └─ .github/workflows/
 ```
@@ -50,6 +52,17 @@ npm run dev -w worker-send
 - `single-file/java/WebhookMail.java`：JDK 17+，可直接 `java WebhookMail.java`
 
 這三個版本都內建簡易黑藍控制台、登入、管理員建立普通用戶、`/api/webhooks/email` 接收端與本地 JSON 持久化。詳細啟動方式請看 [`single-file/README.md`](single-file/README.md)。
+
+## 共用 web-ui 與熱更新
+
+issue #17 將 Docker 版與單文件版的控制台 HTML 統一改為載入 `web-ui/`：
+
+- `web-ui/manifest.json`：宣告版本與要下載的檔案
+- `web-ui/index.html`：共用 HTML shell
+- `web-ui/style.css`：完整黑藍風格樣式
+- `web-ui/app.js`：前端渲染登入頁與控制台
+
+Docker 版與 `single-file/` 的 Python / Node.js / Java 版都會定期從 raw GitHub URL 拉取 `web-ui` 並寫入本機快取，不需要重啟服務就能套用新的 HTML/CSS/JS。若遠端不可用，會優先使用既有快取，最後才退回內建精簡 HTML。
 
 ### 單文件快速啟動
 
@@ -98,6 +111,9 @@ java single-file/java/WebhookMail.java
 - `GITHUB_REPO`：選填，GitHub 倉庫名稱
 - `GITHUB_BRANCH`：選填，GitHub 持久化分支，預設 `main`
 - `GITHUB_PATH`：選填，GitHub 持久化基底路徑，預設 `mail-events`
+- `WEB_UI_RAW_BASE`：選填，web-ui raw 檔案基底 URL，預設 `https://raw.githubusercontent.com/s12ryt/webhook-mail/main/web-ui`
+- `WEB_UI_REFRESH_SECONDS`：選填，web-ui 熱更新檢查間隔秒數，預設 `30`
+- `WEB_UI_CACHE_DIR`：選填，web-ui 快取目錄，預設 `.web-ui-cache`
 
 ### docker-accept 持久化模式
 
