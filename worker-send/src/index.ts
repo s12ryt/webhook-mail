@@ -27,9 +27,9 @@ function parseWebhookUrls(value: string): string[] {
 }
 
 function getTimeoutMs(value?: string): number {
-  const parsed = Number.parseInt(value ?? "10000", 10);
+  const parsed = Number.parseInt(value ?? "30000", 10);
   if (!Number.isFinite(parsed) || parsed <= 0) {
-    return 10000;
+    return 30000;
   }
 
   return parsed;

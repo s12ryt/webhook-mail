@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import mysql from "mysql2/promise";
 import pg from "pg";
 
@@ -29,7 +31,7 @@ export type StorageAdapter = {
   getSession(sessionId: string): Promise<SessionRecord | null>;
   createSession(sessionId: string, session: SessionRecord): Promise<void>;
   deleteSession(sessionId: string): Promise<void>;
-  ensureAdminAccount(username: string, password: string): Promise<UserAccount>;
+  ensureAdminAccount(username: string, password: string, createdAt?: string): Promise<UserAccount>;
   findUser(username: string): Promise<UserAccount | null>;
   updateUserPassword(username: string, password: string): Promise<void>;
   listUsers(): Promise<UserAccount[]>;
@@ -67,6 +69,15 @@ type EmailEventRow = {
   raw_base64: string;
   received_at: string;
 };
+
+const DEFAULT_MEMORY_EVENT_LIMIT = 1000;
+
+function parsePositiveInteger(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const MEMORY_EVENT_LIMIT = parsePositiveInteger(process.env.MEMORY_EVENT_LIMIT, DEFAULT_MEMORY_EVENT_LIMIT);
 
 function mapUserRow(row: StorageRow): UserAccount {
   return {
@@ -211,7 +222,7 @@ class MemoryStorage implements StorageAdapter {
     this.sessions.delete(sessionId);
   }
 
-  async ensureAdminAccount(username: string, password: string): Promise<UserAccount> {
+  async ensureAdminAccount(username: string, password: string, createdAt = new Date().toISOString()): Promise<UserAccount> {
     const existing = this.users.get(username);
     if (existing) {
       return existing;
@@ -221,7 +232,7 @@ class MemoryStorage implements StorageAdapter {
       username,
       password,
       role: "admin",
-      createdAt: new Date().toISOString()
+      createdAt
     };
 
     this.users.set(account.username, account);
@@ -255,7 +266,11 @@ class MemoryStorage implements StorageAdapter {
 
   async storeEmailEvent(payload: EmailWebhookPayload): Promise<void> {
     this.events.unshift(payload);
-    this.events.splice(20);
+    if (this.events.length > MEMORY_EVENT_LIMIT) {
+      const evictedCount = this.events.length - MEMORY_EVENT_LIMIT;
+      this.events.splice(MEMORY_EVENT_LIMIT);
+      console.warn(`[storage:memory] evicted ${evictedCount} email event(s); increase MEMORY_EVENT_LIMIT to retain more events`);
+    }
   }
 
   async listRecentEmailEvents(limit: number): Promise<EmailWebhookPayload[]> {
@@ -337,7 +352,7 @@ class MysqlStorage implements StorageAdapter {
     await this.pool.query("DELETE FROM sessions WHERE session_id = ?", [sessionId]);
   }
 
-  async ensureAdminAccount(username: string, password: string): Promise<UserAccount> {
+  async ensureAdminAccount(username: string, password: string, createdAt = new Date().toISOString()): Promise<UserAccount> {
     const existing = await this.findUser(username);
     if (existing) {
       return existing;
@@ -347,7 +362,7 @@ class MysqlStorage implements StorageAdapter {
       username,
       password,
       role: "admin",
-      createdAt: new Date().toISOString()
+      createdAt
     };
 
     await this.createUser(account);
@@ -491,7 +506,7 @@ class PostgresStorage implements StorageAdapter {
     await this.pool.query("DELETE FROM sessions WHERE session_id = $1", [sessionId]);
   }
 
-  async ensureAdminAccount(username: string, password: string): Promise<UserAccount> {
+  async ensureAdminAccount(username: string, password: string, createdAt = new Date().toISOString()): Promise<UserAccount> {
     const existing = await this.findUser(username);
     if (existing) {
       return existing;
@@ -501,7 +516,7 @@ class PostgresStorage implements StorageAdapter {
       username,
       password,
       role: "admin",
-      createdAt: new Date().toISOString()
+      createdAt
     };
 
     await this.createUser(account);
@@ -739,7 +754,7 @@ class GitHubStorage implements StorageAdapter {
     await this.deleteFile(this.filePath("sessions", `${sessionId}.json`));
   }
 
-  async ensureAdminAccount(username: string, password: string): Promise<UserAccount> {
+  async ensureAdminAccount(username: string, password: string, createdAt = new Date().toISOString()): Promise<UserAccount> {
     const existing = await this.findUser(username);
     if (existing) {
       return existing;
@@ -749,7 +764,7 @@ class GitHubStorage implements StorageAdapter {
       username,
       password,
       role: "admin",
-      createdAt: new Date().toISOString()
+      createdAt
     };
 
     await this.createUser(account);
@@ -790,7 +805,7 @@ class GitHubStorage implements StorageAdapter {
   }
 
   async storeEmailEvent(payload: EmailWebhookPayload): Promise<void> {
-    const fileName = `${Date.now()}-${payload.messageId}.json`;
+    const fileName = `${Date.now()}-${randomUUID()}-${payload.messageId}.json`;
     await this.writeJson(this.filePath("email_events", fileName), {
       ...payload,
       storedAt: new Date().toISOString()
