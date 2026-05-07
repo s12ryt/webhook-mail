@@ -7,7 +7,11 @@ import javax.crypto.spec.PBEKeySpec;
 import java.io.IOException;
 import java.net.HttpCookie;
 import java.net.InetSocketAddress;
+import java.net.URI;
 import java.net.URLDecoder;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -29,7 +33,12 @@ public class WebhookMail {
   static final String ADMIN_INITIAL_USERNAME = System.getenv().getOrDefault("ADMIN_INITIAL_USERNAME", "admin");
   static final String WEBHOOK_SHARED_SECRET = System.getenv().getOrDefault("WEBHOOK_SHARED_SECRET", "");
   static final Path DATA_FILE = Path.of(System.getenv().getOrDefault("DATA_FILE", "webhook-mail-java.json"));
+  static final String WEB_UI_RAW_BASE = System.getenv().getOrDefault("WEB_UI_RAW_BASE", "https://raw.githubusercontent.com/s12ryt/webhook-mail/main/web-ui").replaceAll("/+$", "");
+  static final long WEB_UI_REFRESH_SECONDS = Long.parseLong(System.getenv().getOrDefault("WEB_UI_REFRESH_SECONDS", "30"));
+  static final Path WEB_UI_CACHE_DIR = Path.of(System.getenv().getOrDefault("WEB_UI_CACHE_DIR", ".web-ui-cache"));
+  static final HttpClient HTTP = HttpClient.newHttpClient();
   static final SecureRandom RANDOM = new SecureRandom();
+  static long webUiLastCheckedAt = 0;
   static Store store;
 
   public static void main(String[] args) throws Exception {
@@ -209,14 +218,15 @@ public class WebhookMail {
     return String.valueOf(value == null ? "" : value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;").replace("'", "&#39;");
   }
 
-  static String page(String title, String body) {
+  static String fallbackPage(String title, String body) {
     String css = "body{margin:0;background:#06111f;color:#dbeafe;font-family:system-ui,Segoe UI,sans-serif}.wrap{max-width:1100px;margin:auto;padding:32px}.hero,.panel,.card{background:#0b1930;border:1px solid #1d4ed8;border-radius:18px;padding:22px;margin:16px 0;box-shadow:0 0 30px #0ea5e933}h1{color:#93c5fd}.badge{display:inline-block;background:#0f2f62;color:#bfdbfe;border:1px solid #2563eb;border-radius:999px;padding:4px 10px;font-size:12px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}.value{font-size:30px;font-weight:800;color:#60a5fa}input,button{width:100%;box-sizing:border-box;padding:11px;margin:7px 0;border-radius:10px;border:1px solid #2563eb;background:#081426;color:#e0f2fe}button{cursor:pointer;background:#2563eb;font-weight:700}.secondary{background:#172554}table{width:100%;border-collapse:collapse}td,th{border-bottom:1px solid #1e3a8a;padding:8px;text-align:left}pre{white-space:pre-wrap;background:#020617;padding:12px;border-radius:10px}.notice{padding:12px;border-radius:12px}.error{background:#7f1d1d}.success{background:#14532d}.toolbar{display:flex;justify-content:space-between;gap:12px;align-items:center}.muted{color:#93a4bd}";
     return "<!doctype html><html lang='zh-Hant'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>" + esc(title) + "</title><style>" + css + "</style></head><body><main class='wrap'>" + body + "</main></body></html>";
   }
 
   static String loginPage(String error) {
     String notice = error == null || error.isBlank() ? "" : "<div class='notice error'>" + esc(error) + "</div>";
-    return page("webhook-mail 登入", "<section class='hero'><span class='badge'>SINGLE FILE JAVA</span><h1>webhook-mail 登入</h1><p>管理員帳號來自 ADMIN_INITIAL_USERNAME，密碼來自 ADMIN_INITIAL_PASSWORD。</p></section>" + notice + "<section class='panel'><form method='post' action='/login'><label>帳號<input name='username' required></label><label>密碼<input name='password' type='password' required></label><button>登入</button></form></section>");
+    String fallback = fallbackPage("webhook-mail 登入", "<section class='hero'><span class='badge'>SINGLE FILE JAVA</span><h1>webhook-mail 登入</h1><p>管理員帳號來自 ADMIN_INITIAL_USERNAME，密碼來自 ADMIN_INITIAL_PASSWORD。</p></section>" + notice + "<section class='panel'><form method='post' action='/login'><label>帳號<input name='username' required></label><label>密碼<input name='password' type='password' required></label><button>登入</button></form></section>");
+    return page("webhook-mail 登入", new LinkedHashMap<>(Map.of("page", "login", "error", error == null ? "" : error)), fallback);
   }
 
   static String dashboard(Map<String, Object> session, String flash) {
@@ -235,7 +245,70 @@ public class WebhookMail {
     if ("admin".equals(session.get("role"))) {
       adminTools = "<section class='panel'><h2>管理員操作</h2><div class='grid'><form method='post' action='/api/users'><label>新帳號<input name='username' minlength='3' required></label><label>初始密碼<input name='password' minlength='8' required></label><button>建立普通用戶</button></form><div><h3>目前帳號</h3><table><thead><tr><th>帳號</th><th>角色</th><th>建立時間</th></tr></thead><tbody>" + userRows + "</tbody></table></div></div></section>";
     }
-    return page("webhook-mail 控制台", "<section class='hero'><span class='badge'>BLACK + BLUE UI</span><h1>webhook-mail 單文件控制台</h1><p>目前登入：" + esc(session.get("username")) + "</p><form method='post' action='/logout'><button class='secondary'>登出</button></form></section>" + notice + "<section class='grid'><article class='card'><div>收到事件</div><div class='value'>" + store.events.size() + "</div></article><article class='card'><div>帳號數</div><div class='value'>" + users.size() + "</div></article><article class='card'><div>儲存</div><div class='value'>JSON</div><div class='muted'>" + esc(DATA_FILE) + "</div></article></section>" + adminTools + "<section><h2>最近 webhook</h2>" + events + "</section>");
+    String fallback = fallbackPage("webhook-mail 控制台", "<section class='hero'><span class='badge'>BLACK + BLUE UI</span><h1>webhook-mail 單文件控制台</h1><p>目前登入：" + esc(session.get("username")) + "</p><form method='post' action='/logout'><button class='secondary'>登出</button></form></section>" + notice + "<section class='grid'><article class='card'><div>收到事件</div><div class='value'>" + store.events.size() + "</div></article><article class='card'><div>帳號數</div><div class='value'>" + users.size() + "</div></article><article class='card'><div>儲存</div><div class='value'>JSON</div><div class='muted'>" + esc(DATA_FILE) + "</div></article></section>" + adminTools + "<section><h2>最近 webhook</h2>" + events + "</section>");
+    List<Map<String, Object>> recentEvents = new ArrayList<>();
+    for (int i = 0; i < Math.min(20, store.events.size()); i++) recentEvents.add(store.events.get(i));
+    Map<String, Object> data = new LinkedHashMap<>();
+    data.put("page", "dashboard");
+    data.put("session", session);
+    data.put("users", users);
+    data.put("receivedEvents", recentEvents);
+    data.put("stats", new LinkedHashMap<>(Map.of("userCount", users.size(), "eventCount", store.events.size(), "storageMode", "json")));
+    data.put("connections", new LinkedHashMap<>());
+    data.put("flash", flash == null || flash.isBlank() ? null : new LinkedHashMap<>(Map.of("kind", "success", "message", flash)));
+    return page("webhook-mail 控制台", data, fallback);
+  }
+
+  static String fetchText(String url) throws Exception {
+    HttpRequest request = HttpRequest.newBuilder(URI.create(url)).header("User-Agent", "webhook-mail-java-single-file").GET().build();
+    HttpResponse<String> response = HTTP.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+    if (response.statusCode() < 200 || response.statusCode() >= 300) throw new IOException("HTTP " + response.statusCode() + " while fetching " + url);
+    return response.body();
+  }
+
+  @SuppressWarnings("unchecked")
+  static void refreshWebUi() {
+    long now = Instant.now().getEpochSecond();
+    if (now - webUiLastCheckedAt < WEB_UI_REFRESH_SECONDS) return;
+    webUiLastCheckedAt = now;
+    try {
+      Files.createDirectories(WEB_UI_CACHE_DIR);
+      Map<String, Object> manifest = (Map<String, Object>) Json.parse(fetchText(WEB_UI_RAW_BASE + "/manifest.json"));
+      String cachedVersion = "";
+      Path cachedManifestPath = WEB_UI_CACHE_DIR.resolve("manifest.json");
+      if (Files.exists(cachedManifestPath)) {
+        try {
+          Object parsed = Json.parse(Files.readString(cachedManifestPath, StandardCharsets.UTF_8));
+          if (parsed instanceof Map<?, ?> cached) cachedVersion = String.valueOf(cached.containsKey("version") ? cached.get("version") : "");
+        } catch (Exception ignored) { cachedVersion = ""; }
+      }
+      Object rawFiles = manifest.get("files");
+      List<?> files = rawFiles instanceof List<?> list ? list : List.of();
+      boolean complete = true;
+      for (Object file : files) if (!Files.exists(WEB_UI_CACHE_DIR.resolve(String.valueOf(file)))) complete = false;
+      if (cachedVersion.equals(String.valueOf(manifest.get("version"))) && complete) return;
+      for (Object file : files) {
+        String name = String.valueOf(file);
+        if (name.contains("/") || name.contains("\\") || name.startsWith(".")) continue;
+        Files.writeString(WEB_UI_CACHE_DIR.resolve(name), fetchText(WEB_UI_RAW_BASE + "/" + name), StandardCharsets.UTF_8);
+      }
+      Files.writeString(cachedManifestPath, Json.stringify(manifest), StandardCharsets.UTF_8);
+    } catch (Exception error) {
+      System.out.println("[web-ui] refresh failed: " + error.getMessage());
+    }
+  }
+
+  static String page(String title, Map<String, Object> data, String fallback) {
+    refreshWebUi();
+    try {
+      String template = Files.readString(WEB_UI_CACHE_DIR.resolve("index.html"), StandardCharsets.UTF_8);
+      String style = Files.readString(WEB_UI_CACHE_DIR.resolve("style.css"), StandardCharsets.UTF_8);
+      String script = Files.readString(WEB_UI_CACHE_DIR.resolve("app.js"), StandardCharsets.UTF_8);
+      String payload = Json.stringify(data).replace("<", "\\u003c");
+      return template.replace("{{TITLE}}", esc(title)).replace("{{STYLE_CSS}}", style).replace("{{APP_DATA_JSON}}", payload).replace("{{APP_JS}}", script);
+    } catch (Exception error) {
+      return fallback;
+    }
   }
 
   static class Store {
