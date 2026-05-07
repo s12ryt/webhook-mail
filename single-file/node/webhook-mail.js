@@ -12,6 +12,7 @@ const DATA_FILE = process.env.DATA_FILE || "webhook-mail-node.json";
 const WEB_UI_RAW_BASE = (process.env.WEB_UI_RAW_BASE || "https://raw.githubusercontent.com/s12ryt/webhook-mail/main/web-ui").replace(/\/+$/g, "");
 const WEB_UI_REFRESH_SECONDS = Number(process.env.WEB_UI_REFRESH_SECONDS || 30);
 const WEB_UI_CACHE_DIR = process.env.WEB_UI_CACHE_DIR || ".web-ui-cache";
+const WEB_UI_FETCH_TIMEOUT_MS = Number(process.env.WEB_UI_FETCH_TIMEOUT_MS || 5000);
 let webUiLastCheckedAt = 0;
 
 function nowIso() {
@@ -74,17 +75,39 @@ function fallbackPage(title, body) {
 function fetchText(url) {
   return new Promise((resolve, reject) => {
     const client = url.startsWith("https:") ? require("node:https") : require("node:http");
-    client.get(url, { headers: { "user-agent": "webhook-mail-single-file-node" } }, (res) => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(new Error(`Fetch ${url} timed out after ${WEB_UI_FETCH_TIMEOUT_MS}ms`)), WEB_UI_FETCH_TIMEOUT_MS);
+    const req = client.get(url, { headers: { "user-agent": "webhook-mail-single-file-node" }, signal: controller.signal }, (res) => {
       if (res.statusCode < 200 || res.statusCode >= 300) {
         res.resume();
+        clearTimeout(timeout);
         reject(new Error(`Fetch ${url} failed: ${res.statusCode}`));
         return;
       }
       const chunks = [];
       res.on("data", (chunk) => chunks.push(chunk));
-      res.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-    }).on("error", reject);
+      res.on("end", () => {
+        clearTimeout(timeout);
+        resolve(Buffer.concat(chunks).toString("utf8"));
+      });
+      res.on("error", (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      });
+    });
+    req.on("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
   });
+}
+
+function isSafeWebUiAssetName(name) {
+  if (typeof name !== "string" || !name) return false;
+  if (name.includes("\\")) return false;
+  if (name.startsWith("/") || name.startsWith(".") || name.includes("..")) return false;
+  const normalized = require("node:path").posix.normalize(name);
+  return normalized === name && !normalized.startsWith("../") && !normalized.includes("/../") && !normalized.endsWith("/..") && !normalized.includes("//");
 }
 
 async function refreshWebUi() {
@@ -98,6 +121,7 @@ async function refreshWebUi() {
   try { cachedVersion = JSON.parse(fs.readFileSync(manifestPath, "utf8")).version || ""; } catch {}
   if (cachedVersion === manifest.version && fs.existsSync(`${WEB_UI_CACHE_DIR}/index.html`)) return;
   for (const file of manifest.files || []) {
+    if (!isSafeWebUiAssetName(file)) continue;
     const target = `${WEB_UI_CACHE_DIR}/${file}`;
     fs.mkdirSync(require("node:path").dirname(target), { recursive: true });
     fs.writeFileSync(target, await fetchText(`${WEB_UI_RAW_BASE}/${file}`));
