@@ -26,10 +26,14 @@ registerRoutes(app, {
 
 storage
   .init()
-  .then(() => initializeAdminAccount(storage, runtime.adminBootstrapUsername, runtime.adminBootstrapPassword))
-  .then(() => {
+  .then(() => initializeAdminAccount(storage, runtime.adminBootstrapUsername, runtime.adminBootstrapPassword, runtime.adminBootstrapCreatedAt))
+  .then((adminAccount) => {
     app.listen(runtime.port, () => {
       console.log(`docker-accept listening on http://localhost:${runtime.port} (storage: ${storage.mode})`);
+      if (!process.env.ADMIN_INITIAL_PASSWORD && adminAccount.createdAt === runtime.adminBootstrapCreatedAt) {
+        console.warn(`[security] ADMIN_INITIAL_PASSWORD was not set; generated one-time bootstrap password for ${runtime.adminBootstrapUsername}: ${runtime.adminBootstrapPassword}`);
+        console.warn("[security] Set ADMIN_INITIAL_PASSWORD explicitly after first login or create a new admin credential in persistent storage.");
+      }
     });
   })
   .catch((error) => {

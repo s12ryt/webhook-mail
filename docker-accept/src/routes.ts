@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 
 import type { Express, Request, Response } from "express";
 
@@ -14,8 +14,8 @@ type RouteDeps = {
   config: RuntimeConfig;
 };
 
-async function ensureAdminAccount(storage: StorageAdapter, adminBootstrapUsername: string, adminBootstrapPassword: string): Promise<UserAccount> {
-  return storage.ensureAdminAccount(adminBootstrapUsername, await hashPassword(adminBootstrapPassword));
+async function ensureAdminAccount(storage: StorageAdapter, adminBootstrapUsername: string, adminBootstrapPassword: string, createdAt?: string): Promise<UserAccount> {
+  return storage.ensureAdminAccount(adminBootstrapUsername, await hashPassword(adminBootstrapPassword), createdAt);
 }
 
 async function getSession(request: Request, storage: StorageAdapter): Promise<SessionRecord | null> {
@@ -38,6 +38,12 @@ async function verifyAndUpgradePassword(storage: StorageAdapter, account: UserAc
   }
 
   return true;
+}
+
+function secureCompare(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
 }
 
 async function authenticate(storage: StorageAdapter, adminBootstrapUsername: string, adminBootstrapPassword: string, username: string, password: string): Promise<SessionRecord | null> {
@@ -74,8 +80,8 @@ function normalizePayload(payload: Partial<EmailWebhookPayload>): EmailWebhookPa
   };
 }
 
-export async function initializeAdminAccount(storage: StorageAdapter, adminBootstrapUsername: string, adminBootstrapPassword: string): Promise<void> {
-  await ensureAdminAccount(storage, adminBootstrapUsername, adminBootstrapPassword);
+export async function initializeAdminAccount(storage: StorageAdapter, adminBootstrapUsername: string, adminBootstrapPassword: string, createdAt?: string): Promise<UserAccount> {
+  return ensureAdminAccount(storage, adminBootstrapUsername, adminBootstrapPassword, createdAt);
 }
 
 export function registerRoutes(app: Express, deps: RouteDeps): void {
@@ -156,7 +162,7 @@ export function registerRoutes(app: Express, deps: RouteDeps): void {
   app.post("/api/webhooks/email", async (request: Request, response: Response) => {
     if (config.sharedSecret) {
       const secret = request.header("x-webhook-secret");
-      if (secret !== config.sharedSecret) {
+      if (!secret || !secureCompare(secret, config.sharedSecret)) {
         response.status(401).json({ ok: false, error: "invalid webhook secret" });
         return;
       }

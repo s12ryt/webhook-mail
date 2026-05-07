@@ -1,3 +1,5 @@
+import { randomBytes } from "node:crypto";
+
 import type { GitHubStorageInput, StorageMode } from "./storage.js";
 
 export type RuntimeConfig = {
@@ -5,6 +7,7 @@ export type RuntimeConfig = {
   sharedSecret?: string;
   adminBootstrapUsername: string;
   adminBootstrapPassword: string;
+  adminBootstrapCreatedAt: string;
   mysqlConnection: string;
   postgresConnection: string;
   githubStorageInput: GitHubStorageInput;
@@ -16,6 +19,10 @@ export type RuntimeConfig = {
     cacheDir: string;
   };
 };
+
+function generateBootstrapPassword(): string {
+  return randomBytes(24).toString("base64url");
+}
 
 function normalizeGitHubPath(value: string): string {
   return value
@@ -53,11 +60,15 @@ export function loadRuntimeConfig(storageMode: StorageMode): RuntimeConfig {
     path: process.env.GITHUB_PATH ?? "mail-events"
   };
 
+  const generatedAdminPassword = process.env.ADMIN_INITIAL_PASSWORD ? "" : generateBootstrapPassword();
+  const adminBootstrapCreatedAt = new Date().toISOString();
+
   return {
     port: Number(process.env.PORT ?? 3000),
     sharedSecret: process.env.WEBHOOK_SHARED_SECRET,
     adminBootstrapUsername: process.env.ADMIN_INITIAL_USERNAME ?? "admin",
-    adminBootstrapPassword: process.env.ADMIN_INITIAL_PASSWORD ?? "change-me-now",
+    adminBootstrapPassword: process.env.ADMIN_INITIAL_PASSWORD ?? generatedAdminPassword,
+    adminBootstrapCreatedAt,
     mysqlConnection: process.env.MYSQL_URL ?? "",
     postgresConnection: process.env.POSTGRES_URL ?? "",
     githubStorageInput,
