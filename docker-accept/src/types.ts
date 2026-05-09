@@ -24,4 +24,5 @@ export type SessionRecord = {
   username: string;
   role: UserRole;
   createdAt: string;
+  expiresAt: string;
 };

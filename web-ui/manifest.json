@@ -1,9 +1,14 @@
 {
-  "version": "2026-05-07-issue-17-001",
+  "version": "2026-05-09-issue-26-001",
   "entry": "index.html",
   "files": [
     "index.html",
     "style.css",
     "app.js"
-  ]
+  ],
+  "checksums": {
+    "index.html": "9d56049406dd0a652f31dcaa4c438e1d8dc259c9c55370abcc83da0d1c620a65",
+    "style.css": "9b569955ec7be1b32022d2a519a2e38d27cb4ad501a94a3a727ba336d4e9b6ba",
+    "app.js": "20b716c66d2bbd61cd4a212688c56b39add442e14bbe27100c93a0cc0804cdf9"
+  }
 }

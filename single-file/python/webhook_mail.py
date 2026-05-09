@@ -8,6 +8,7 @@ import html
 import json
 import os
 import secrets
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -25,11 +26,53 @@ DATA_FILE = Path(os.getenv("DATA_FILE", "webhook-mail-python.json"))
 WEB_UI_RAW_BASE = os.getenv("WEB_UI_RAW_BASE", "https://raw.githubusercontent.com/s12ryt/webhook-mail/main/web-ui").rstrip("/")
 WEB_UI_REFRESH_SECONDS = int(os.getenv("WEB_UI_REFRESH_SECONDS", "30"))
 WEB_UI_CACHE_DIR = Path(os.getenv("WEB_UI_CACHE_DIR", ".web-ui-cache"))
+SESSION_TTL_SECONDS = 24 * 60 * 60
+LOGIN_FAILURE_LIMIT = 5
+LOGIN_LOCK_SECONDS = 60
+login_rate_limits: dict[str, dict[str, float]] = {}
 web_ui_last_checked_at = 0.0
 
 
 def now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def session_expires_at() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + SESSION_TTL_SECONDS))
+
+
+def is_expired(value: str | None) -> bool:
+    if not value:
+        return False
+    try:
+        return time.mktime(time.strptime(value, "%Y-%m-%dT%H:%M:%SZ")) <= time.time()
+    except Exception:
+        return False
+
+
+def cookie_secure_suffix() -> str:
+    return "; Secure" if os.getenv("NODE_ENV") == "production" else ""
+
+
+def is_login_locked(ip: str) -> bool:
+    state = login_rate_limits.get(ip)
+    if not state:
+        return False
+    if state.get("locked_until", 0) <= time.time():
+        login_rate_limits.pop(ip, None)
+        return False
+    return True
+
+
+def record_login_failure(ip: str) -> None:
+    state = login_rate_limits.setdefault(ip, {"failed": 0, "locked_until": 0})
+    state["failed"] += 1
+    if state["failed"] >= LOGIN_FAILURE_LIMIT:
+        state["locked_until"] = time.time() + LOGIN_LOCK_SECONDS
+
+
+def record_login_success(ip: str) -> None:
+    login_rate_limits.pop(ip, None)
 
 
 def hash_password(password: str) -> str:
@@ -52,6 +95,7 @@ def verify_password(password: str, stored: str) -> bool:
 class Store:
     def __init__(self, path: Path):
         self.path = path
+        self._lock = threading.Lock()
         self.data: dict[str, Any] = {"users": {}, "sessions": {}, "events": []}
         self.load()
         self.ensure_admin()
@@ -67,7 +111,8 @@ class Store:
             pass
 
     def save(self) -> None:
-        self.path.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8")
+        with self._lock:
+            self.path.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def ensure_admin(self) -> None:
         if ADMIN_INITIAL_USERNAME not in self.data["users"]:
@@ -86,7 +131,7 @@ class Store:
         if not str(user.get("password", "")).startswith("pbkdf2$"):
             user["password"] = hash_password(password)
             self.save()
-        return {"username": user["username"], "role": user["role"], "createdAt": now_iso()}
+        return {"username": user["username"], "role": user["role"], "createdAt": now_iso(), "expiresAt": session_expires_at()}
 
     def create_session(self, session: dict[str, Any]) -> str:
         session_id = secrets.token_urlsafe(32)
@@ -97,7 +142,11 @@ class Store:
     def get_session(self, session_id: str | None) -> dict[str, Any] | None:
         if not session_id:
             return None
-        return self.data["sessions"].get(session_id)
+        session = self.data["sessions"].get(session_id)
+        if session and is_expired(session.get("expiresAt")):
+            self.delete_session(session_id)
+            return None
+        return session
 
     def delete_session(self, session_id: str | None) -> None:
         if session_id and session_id in self.data["sessions"]:
@@ -159,7 +208,13 @@ def refresh_web_ui() -> None:
         for name in manifest.get("files", []):
             if "/" in name or "\\" in name or name.startswith("."):
                 continue
-            (WEB_UI_CACHE_DIR / name).write_text(fetch_text(f"{WEB_UI_RAW_BASE}/{urllib.parse.quote(name)}"), encoding="utf-8")
+            content = fetch_text(f"{WEB_UI_RAW_BASE}/{urllib.parse.quote(name)}")
+            expected = manifest.get("checksums", {}).get(name)
+            if expected:
+                actual = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                if actual != str(expected).lower():
+                    raise RuntimeError(f"checksum mismatch for {name}: expected {expected}, got {actual}")
+            (WEB_UI_CACHE_DIR / name).write_text(content, encoding="utf-8")
         cached_manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception as error:
         print(f"[web-ui] refresh failed: {error}")
@@ -239,6 +294,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Location", location)
         self.end_headers()
 
+    def client_ip(self) -> str:
+        forwarded = self.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+        return forwarded or self.client_address[0]
+
     def json(self, payload: dict[str, Any], status: int = 200) -> None:
         self.send_bytes(json.dumps(payload, ensure_ascii=False).encode(), status, "application/json; charset=utf-8")
 
@@ -255,18 +314,24 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         if self.path == "/login":
+            ip = self.client_ip()
+            if is_login_locked(ip):
+                self.send_bytes(login_page("登入失敗太多次，請 60 秒後再試"), 429)
+                return
             data = self.form()
             session = store.authenticate(data.get("username", "").strip(), data.get("password", ""))
             if not session:
+                record_login_failure(ip)
                 self.send_bytes(login_page("帳號或密碼錯誤"), 401)
                 return
+            record_login_success(ip)
             session_id = store.create_session(session)
-            self.send_bytes(dashboard(session, "登入成功"), headers={"Set-Cookie": f"webhook_mail_session={urllib.parse.quote(session_id)}; HttpOnly; SameSite=Lax; Path=/"})
+            self.send_bytes(dashboard(session, "登入成功"), headers={"Set-Cookie": f"webhook_mail_session={urllib.parse.quote(session_id)}; HttpOnly; SameSite=Lax; Path=/{cookie_secure_suffix()}"})
         elif self.path == "/logout":
             store.delete_session(self.cookies().get("webhook_mail_session"))
             self.send_response(303)
             self.send_header("Location", "/login")
-            self.send_header("Set-Cookie", "webhook_mail_session=; Max-Age=0; Path=/")
+            self.send_header("Set-Cookie", f"webhook_mail_session=; Max-Age=0; Path=/{cookie_secure_suffix()}")
             self.end_headers()
         elif self.path == "/api/webhooks/email":
             if WEBHOOK_SHARED_SECRET and self.headers.get("x-webhook-secret") != WEBHOOK_SHARED_SECRET:

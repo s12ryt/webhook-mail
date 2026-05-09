@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -15,6 +16,7 @@ type WebUiManifest = {
   version: string;
   entry: string;
   files: string[];
+  checksums?: Record<string, string>;
 };
 
 let lastCheckedAt = 0;
@@ -30,7 +32,30 @@ function escapeHtml(value: string): string {
 }
 
 function safeFileName(file: string): string {
-  return file.split("/").filter(Boolean).join(path.sep);
+  if (file.includes("\\") || file.startsWith("/") || file.startsWith(".") || file.includes("..")) {
+    throw new Error(`Unsafe web-ui asset name: ${file}`);
+  }
+  const normalized = path.posix.normalize(file);
+  if (normalized !== file || normalized.startsWith("../") || normalized.includes("/../") || normalized.includes("//")) {
+    throw new Error(`Unsafe web-ui asset name: ${file}`);
+  }
+  return normalized.split("/").filter(Boolean).join(path.sep);
+}
+
+function sha256Hex(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function verifyChecksum(file: string, content: string, manifest: WebUiManifest): void {
+  const expected = manifest.checksums?.[file];
+  if (!expected) {
+    return;
+  }
+
+  const actual = sha256Hex(content);
+  if (actual !== expected.toLowerCase()) {
+    throw new Error(`Checksum mismatch for ${file}: expected ${expected}, got ${actual}`);
+  }
 }
 
 async function readOptional(filePath: string): Promise<string | null> {
@@ -69,8 +94,10 @@ async function refreshRemoteUi(config: WebUiConfig): Promise<void> {
 
   for (const file of manifest.files) {
     const target = path.join(config.cacheDir, safeFileName(file));
+    const content = await fetchText(`${base}/${file}`);
+    verifyChecksum(file, content, manifest);
     await mkdir(path.dirname(target), { recursive: true });
-    await writeFile(target, await fetchText(`${base}/${file}`), "utf8");
+    await writeFile(target, content, "utf8");
   }
 
   await writeFile(path.join(config.cacheDir, "manifest.json"), JSON.stringify(manifest, null, 2), "utf8");

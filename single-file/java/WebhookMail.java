@@ -16,7 +16,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.SecureRandom;
+import java.security.MessageDigest;
 import java.time.Instant;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Comparator;
@@ -36,6 +38,7 @@ public class WebhookMail {
   static final String WEB_UI_RAW_BASE = System.getenv().getOrDefault("WEB_UI_RAW_BASE", "https://raw.githubusercontent.com/s12ryt/webhook-mail/main/web-ui").replaceAll("/+$", "");
   static final long WEB_UI_REFRESH_SECONDS = Long.parseLong(System.getenv().getOrDefault("WEB_UI_REFRESH_SECONDS", "30"));
   static final Path WEB_UI_CACHE_DIR = Path.of(System.getenv().getOrDefault("WEB_UI_CACHE_DIR", ".web-ui-cache"));
+  static final Duration SESSION_TTL = Duration.ofHours(24);
   static final HttpClient HTTP = HttpClient.newHttpClient();
   static final SecureRandom RANDOM = new SecureRandom();
   static long webUiLastCheckedAt = 0;
@@ -129,6 +132,13 @@ public class WebhookMail {
 
   static String nowIso() { return Instant.now().toString(); }
 
+  static String sessionExpiresAt() { return Instant.now().plus(SESSION_TTL).toString(); }
+
+  static boolean isExpired(Object value) {
+    if (value == null) return false;
+    try { return !Instant.parse(String.valueOf(value)).isAfter(Instant.now()); } catch (Exception ignored) { return false; }
+  }
+
   static String token(int bytes) {
     byte[] data = new byte[bytes];
     RANDOM.nextBytes(data);
@@ -165,7 +175,14 @@ public class WebhookMail {
   }
 
   static Map<String, Object> session(HttpExchange exchange) {
-    return store.sessions.get(cookies(exchange).get("webhook_mail_session"));
+    String sessionId = cookies(exchange).get("webhook_mail_session");
+    Map<String, Object> session = store.sessions.get(sessionId);
+    if (session != null && isExpired(session.get("expiresAt"))) {
+      store.sessions.remove(sessionId);
+      try { store.save(); } catch (IOException ignored) {}
+      return null;
+    }
+    return session;
   }
 
   static String body(HttpExchange exchange) throws IOException {
@@ -266,6 +283,13 @@ public class WebhookMail {
     return response.body();
   }
 
+  static String sha256Hex(String value) throws Exception {
+    byte[] digest = MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
+    StringBuilder out = new StringBuilder();
+    for (byte b : digest) out.append(String.format("%02x", b));
+    return out.toString();
+  }
+
   @SuppressWarnings("unchecked")
   static void refreshWebUi() {
     long now = Instant.now().getEpochSecond();
@@ -290,7 +314,14 @@ public class WebhookMail {
       for (Object file : files) {
         String name = String.valueOf(file);
         if (name.contains("/") || name.contains("\\") || name.startsWith(".")) continue;
-        Files.writeString(WEB_UI_CACHE_DIR.resolve(name), fetchText(WEB_UI_RAW_BASE + "/" + name), StandardCharsets.UTF_8);
+        String content = fetchText(WEB_UI_RAW_BASE + "/" + name);
+        Object rawChecksums = manifest.get("checksums");
+        if (rawChecksums instanceof Map<?, ?> checksums && checksums.get(name) != null) {
+          String expected = String.valueOf(checksums.get(name)).toLowerCase();
+          String actual = sha256Hex(content);
+          if (!actual.equals(expected)) throw new IOException("checksum mismatch for " + name + ": expected " + expected + ", got " + actual);
+        }
+        Files.writeString(WEB_UI_CACHE_DIR.resolve(name), content, StandardCharsets.UTF_8);
       }
       Files.writeString(cachedManifestPath, Json.stringify(manifest), StandardCharsets.UTF_8);
     } catch (Exception error) {
@@ -339,7 +370,7 @@ public class WebhookMail {
       if (rawEvents instanceof List<?> list) for (Object value : list) if (value instanceof Map<?, ?> event) events.add((Map<String, Object>) event);
     }
 
-    void save() throws IOException {
+    synchronized void save() throws IOException {
       Map<String, Object> root = new LinkedHashMap<>();
       root.put("users", users);
       root.put("sessions", sessions);
@@ -354,7 +385,7 @@ public class WebhookMail {
         user.put("password", hashPassword(password));
         save();
       }
-      return new LinkedHashMap<>(Map.of("username", user.get("username"), "role", user.get("role"), "createdAt", nowIso()));
+      return new LinkedHashMap<>(Map.of("username", user.get("username"), "role", user.get("role"), "createdAt", nowIso(), "expiresAt", sessionExpiresAt()));
     }
   }
 
