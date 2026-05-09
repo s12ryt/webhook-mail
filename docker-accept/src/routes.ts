@@ -14,6 +14,60 @@ type RouteDeps = {
   config: RuntimeConfig;
 };
 
+const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+const LOGIN_FAILURE_LIMIT = 5;
+const LOGIN_LOCK_MS = 60 * 1000;
+
+type LoginRateState = {
+  failed: number;
+  lockedUntil: number;
+};
+
+const loginRateLimits = new Map<string, LoginRateState>();
+
+function sessionExpiresAt(now = Date.now()): string {
+  return new Date(now + SESSION_TTL_MS).toISOString();
+}
+
+function isExpired(iso: string): boolean {
+  const time = Date.parse(iso);
+  return Number.isFinite(time) && time <= Date.now();
+}
+
+function requestIp(request: Request): string {
+  const forwarded = String(request.headers["x-forwarded-for"] ?? "").split(",")[0]?.trim();
+  return forwarded || request.ip || request.socket.remoteAddress || "unknown";
+}
+
+function isLoginLocked(key: string): boolean {
+  const state = loginRateLimits.get(key);
+  if (!state) {
+    return false;
+  }
+  if (state.lockedUntil <= Date.now()) {
+    loginRateLimits.delete(key);
+    return false;
+  }
+  return true;
+}
+
+function recordLoginFailure(key: string): void {
+  const state = loginRateLimits.get(key) ?? { failed: 0, lockedUntil: 0 };
+  state.failed += 1;
+  if (state.failed >= LOGIN_FAILURE_LIMIT) {
+    state.lockedUntil = Date.now() + LOGIN_LOCK_MS;
+  }
+  loginRateLimits.set(key, state);
+}
+
+function recordLoginSuccess(key: string): void {
+  loginRateLimits.delete(key);
+}
+
+function secureCookieOptions(): { httpOnly: true; sameSite: "lax"; secure?: true } {
+  return process.env.NODE_ENV === "production" ? { httpOnly: true, sameSite: "lax", secure: true } : { httpOnly: true, sameSite: "lax" };
+}
+
 async function ensureAdminAccount(storage: StorageAdapter, adminBootstrapUsername: string, adminBootstrapPassword: string, createdAt?: string): Promise<UserAccount> {
   return storage.ensureAdminAccount(adminBootstrapUsername, await hashPassword(adminBootstrapPassword), createdAt);
 }
@@ -24,7 +78,17 @@ async function getSession(request: Request, storage: StorageAdapter): Promise<Se
     return null;
   }
 
-  return storage.getSession(sessionId);
+  const session = await storage.getSession(sessionId);
+  if (!session) {
+    return null;
+  }
+
+  if (isExpired(session.expiresAt)) {
+    await storage.deleteSession(sessionId);
+    return null;
+  }
+
+  return session;
 }
 
 async function verifyAndUpgradePassword(storage: StorageAdapter, account: UserAccount, password: string): Promise<boolean> {
@@ -56,7 +120,8 @@ async function authenticate(storage: StorageAdapter, adminBootstrapUsername: str
     return null;
   }
 
-  return { username: account.username, role: account.role, createdAt: new Date().toISOString() };
+  const createdAt = new Date().toISOString();
+  return { username: account.username, role: account.role, createdAt, expiresAt: sessionExpiresAt() };
 }
 
 async function requireAdmin(request: Request, response: Response, storage: StorageAdapter, config: RuntimeConfig): Promise<SessionRecord | null> {
@@ -105,18 +170,27 @@ export function registerRoutes(app: Express, deps: RouteDeps): void {
   });
 
   app.post("/login", async (request: Request, response: Response) => {
+    const rateKey = requestIp(request);
+    if (isLoginLocked(rateKey)) {
+      response.status(429).type("html").send(await renderLoginPage(config.webUi, "登入失敗太多次，請 60 秒後再試"));
+      return;
+    }
+
     const username = String(request.body.username ?? "").trim();
     const password = String(request.body.password ?? "");
     const session = await authenticate(storage, config.adminBootstrapUsername, config.adminBootstrapPassword, username, password);
 
     if (!session) {
+      recordLoginFailure(rateKey);
       response.status(401).type("html").send(await renderLoginPage(config.webUi, "帳號或密碼錯誤"));
       return;
     }
 
+    recordLoginSuccess(rateKey);
+
     const sessionId = randomUUID();
     await storage.createSession(sessionId, session);
-    response.cookie("webhook_mail_session", sessionId, { httpOnly: true, sameSite: "lax" });
+    response.cookie("webhook_mail_session", sessionId, secureCookieOptions());
     response.type("html").send(await renderDashboardPage({
       webUi: config.webUi,
       session,
@@ -138,7 +212,7 @@ export function registerRoutes(app: Express, deps: RouteDeps): void {
       await storage.deleteSession(cookies.webhook_mail_session);
     }
 
-    response.clearCookie("webhook_mail_session");
+    response.clearCookie("webhook_mail_session", secureCookieOptions());
     response.redirect("/login");
   });
 

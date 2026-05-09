@@ -55,6 +55,13 @@ type SessionRow = {
   username: string;
   role: string;
   created_at: string;
+  expires_at?: string | null;
+};
+
+type GitHubEmailEventIndex = {
+  version: 1;
+  updatedAt: string;
+  events: Array<EmailWebhookPayload & { storedAt: string; path: string }>;
 };
 
 type EmailEventRow = {
@@ -71,6 +78,13 @@ type EmailEventRow = {
 };
 
 const DEFAULT_MEMORY_EVENT_LIMIT = 1000;
+const GITHUB_EMAIL_EVENT_INDEX_LIMIT = 1000;
+
+function defaultSessionExpiresAt(createdAt: string): string {
+  const created = Date.parse(createdAt);
+  const base = Number.isFinite(created) ? created : Date.now();
+  return new Date(base + 24 * 60 * 60 * 1000).toISOString();
+}
 
 function parsePositiveInteger(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(String(value ?? ""), 10);
@@ -92,7 +106,8 @@ function mapSessionRow(row: SessionRow): SessionRecord {
   return {
     username: row.username,
     role: row.role === "admin" ? "admin" : "member",
-    createdAt: row.created_at
+    createdAt: row.created_at,
+    expiresAt: row.expires_at || defaultSessionExpiresAt(row.created_at)
   };
 }
 
@@ -310,9 +325,14 @@ class MysqlStorage implements StorageAdapter {
         session_id VARCHAR(128) PRIMARY KEY,
         username VARCHAR(64) NOT NULL,
         role VARCHAR(16) NOT NULL,
-        created_at VARCHAR(64) NOT NULL
+        created_at VARCHAR(64) NOT NULL,
+        expires_at VARCHAR(64) NOT NULL
       )
     `);
+
+    try {
+      await this.pool.query("ALTER TABLE sessions ADD COLUMN expires_at VARCHAR(64) NOT NULL DEFAULT '2099-01-01T00:00:00.000Z'");
+    } catch {}
 
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS email_events (
@@ -333,7 +353,7 @@ class MysqlStorage implements StorageAdapter {
 
   async getSession(sessionId: string): Promise<SessionRecord | null> {
     const [rows] = await this.pool.query<mysql.RowDataPacket[]>(
-      "SELECT username, role, created_at FROM sessions WHERE session_id = ? LIMIT 1",
+      "SELECT username, role, created_at, expires_at FROM sessions WHERE session_id = ? LIMIT 1",
       [sessionId]
     );
 
@@ -343,8 +363,8 @@ class MysqlStorage implements StorageAdapter {
 
   async createSession(sessionId: string, session: SessionRecord): Promise<void> {
     await this.pool.query(
-      "REPLACE INTO sessions (session_id, username, role, created_at) VALUES (?, ?, ?, ?)",
-      [sessionId, session.username, session.role, session.createdAt]
+      "REPLACE INTO sessions (session_id, username, role, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
+      [sessionId, session.username, session.role, session.createdAt, session.expiresAt]
     );
   }
 
@@ -463,9 +483,12 @@ class PostgresStorage implements StorageAdapter {
         session_id VARCHAR(128) PRIMARY KEY,
         username VARCHAR(64) NOT NULL,
         role VARCHAR(16) NOT NULL,
-        created_at VARCHAR(64) NOT NULL
+        created_at VARCHAR(64) NOT NULL,
+        expires_at VARCHAR(64) NOT NULL
       )
     `);
+
+    await this.pool.query("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS expires_at VARCHAR(64) NOT NULL DEFAULT '2099-01-01T00:00:00.000Z'");
 
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS email_events (
@@ -486,7 +509,7 @@ class PostgresStorage implements StorageAdapter {
 
   async getSession(sessionId: string): Promise<SessionRecord | null> {
     const result = await this.pool.query<SessionRow>(
-      "SELECT username, role, created_at FROM sessions WHERE session_id = $1 LIMIT 1",
+      "SELECT username, role, created_at, expires_at FROM sessions WHERE session_id = $1 LIMIT 1",
       [sessionId]
     );
 
@@ -495,10 +518,10 @@ class PostgresStorage implements StorageAdapter {
 
   async createSession(sessionId: string, session: SessionRecord): Promise<void> {
     await this.pool.query(
-      `INSERT INTO sessions (session_id, username, role, created_at)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (session_id) DO UPDATE SET username = EXCLUDED.username, role = EXCLUDED.role, created_at = EXCLUDED.created_at`,
-      [sessionId, session.username, session.role, session.createdAt]
+      `INSERT INTO sessions (session_id, username, role, created_at, expires_at)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (session_id) DO UPDATE SET username = EXCLUDED.username, role = EXCLUDED.role, created_at = EXCLUDED.created_at, expires_at = EXCLUDED.expires_at`,
+      [sessionId, session.username, session.role, session.createdAt, session.expiresAt]
     );
   }
 
@@ -742,6 +765,36 @@ class GitHubStorage implements StorageAdapter {
     }
   }
 
+  private async readEmailEventIndex(): Promise<GitHubEmailEventIndex | null> {
+    const index = await this.readJson<Partial<GitHubEmailEventIndex>>(this.filePath("email_events", "index.json"));
+    if (!index || !Array.isArray(index.events)) {
+      return null;
+    }
+
+    return {
+      version: 1,
+      updatedAt: String(index.updatedAt ?? new Date().toISOString()),
+      events: index.events
+        .filter((item): item is EmailWebhookPayload & { storedAt: string; path: string } => Boolean(item) && typeof item === "object" && typeof (item as { path?: unknown }).path === "string")
+        .sort((left, right) => right.storedAt.localeCompare(left.storedAt))
+    };
+  }
+
+  private async listRecentEmailEventsFallback(limit: number): Promise<EmailWebhookPayload[]> {
+    const entries = await this.listDirectory(this.filePath("email_events"));
+    const events = await Promise.all(
+      entries
+        .filter((entry): entry is GitHubContentDirectoryEntry & { type: "file" } => entry.type === "file" && entry.path.endsWith(".json") && !entry.path.endsWith("/index.json"))
+        .map(async (entry) => this.readJson<EmailWebhookPayload & { storedAt?: string }>(entry.path))
+    );
+
+    return events
+      .filter((item): item is EmailWebhookPayload & { storedAt?: string } => Boolean(item))
+      .sort((left, right) => String(right.storedAt ?? right.receivedAt).localeCompare(String(left.storedAt ?? left.receivedAt)))
+      .slice(0, limit)
+      .map(({ storedAt: _storedAt, ...item }) => item);
+  }
+
   async getSession(sessionId: string): Promise<SessionRecord | null> {
     return this.readJson<SessionRecord>(this.filePath("sessions", `${sessionId}.json`));
   }
@@ -805,49 +858,46 @@ class GitHubStorage implements StorageAdapter {
   }
 
   async storeEmailEvent(payload: EmailWebhookPayload): Promise<void> {
+    const storedAt = new Date().toISOString();
     const fileName = `${Date.now()}-${randomUUID()}-${payload.messageId}.json`;
-    await this.writeJson(this.filePath("email_events", fileName), {
+    const eventPath = this.filePath("email_events", fileName);
+    await this.writeJson(eventPath, {
       ...payload,
-      storedAt: new Date().toISOString()
+      storedAt
     });
+
+    const currentIndex = await this.readEmailEventIndex();
+    const nextIndex: GitHubEmailEventIndex = {
+      version: 1,
+      updatedAt: storedAt,
+      events: [
+        { ...payload, storedAt, path: eventPath },
+        ...(currentIndex?.events ?? [])
+      ]
+        .filter((item, index, all) => all.findIndex((candidate) => candidate.path === item.path) === index)
+        .sort((left, right) => right.storedAt.localeCompare(left.storedAt))
+        .slice(0, GITHUB_EMAIL_EVENT_INDEX_LIMIT)
+    };
+    await this.writeJson(this.filePath("email_events", "index.json"), nextIndex);
   }
 
   async listRecentEmailEvents(limit: number): Promise<EmailWebhookPayload[]> {
-    const entries = await this.listDirectory(this.filePath("email_events"));
-    const events = await Promise.all(
-      entries
-        .filter((entry): entry is GitHubContentDirectoryEntry & { type: "file" } => entry.type === "file" && entry.path.endsWith(".json"))
-        .map(async (entry) => {
-          const item = await this.readJson<EmailWebhookPayload & { storedAt?: string }>(entry.path);
-          if (!item) {
-            return null;
-          }
+    const index = await this.readEmailEventIndex();
+    if (!index) {
+      return this.listRecentEmailEventsFallback(limit);
+    }
 
-          return item;
-        })
-    );
-
-    return events
-      .filter((item): item is EmailWebhookPayload & { storedAt?: string } => Boolean(item))
-      .sort((left, right) => String((right as { storedAt?: string }).storedAt ?? right.receivedAt).localeCompare(String((left as { storedAt?: string }).storedAt ?? left.receivedAt)))
-      .slice(0, limit)
-      .map((item) => ({
-        event: item.event,
-        messageId: item.messageId,
-        from: item.from,
-        to: item.to,
-        rawSize: item.rawSize,
-        subject: item.subject,
-        headers: item.headers,
-        textPreview: item.textPreview,
-        rawBase64: item.rawBase64,
-        receivedAt: item.receivedAt
-      }));
+    return index.events.slice(0, limit).map(({ storedAt: _storedAt, path: _path, ...item }) => item);
   }
 
   async countEmailEvents(): Promise<number> {
+    const index = await this.readEmailEventIndex();
+    if (index) {
+      return index.events.length;
+    }
+
     const entries = await this.listDirectory(this.filePath("email_events"));
-    return entries.filter((entry) => entry.type === "file" && entry.path.endsWith(".json")).length;
+    return entries.filter((entry) => entry.type === "file" && entry.path.endsWith(".json") && !entry.path.endsWith("/index.json")).length;
   }
 }
 
