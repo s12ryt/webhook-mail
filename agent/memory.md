@@ -16,3 +16,4 @@
 - issue #17 的 UI 策略：新增根目錄 `web-ui/` 作為 Docker 版與 single-file 三版共用 UI；執行時依 `WEB_UI_RAW_BASE` 下載 `manifest.json` 指定檔案，依 `WEB_UI_REFRESH_SECONDS` 做 TTL 熱更新，寫入 `WEB_UI_CACHE_DIR`，若遠端/快取失敗才退回內建 fallback HTML。
 - issue #20 安全/可靠性修正方向：GitHub 郵件事件檔名需含 `randomUUID()` 避免同毫秒覆寫；`docker-accept` webhook secret 以 `timingSafeEqual` 比對；未設定 `ADMIN_INITIAL_PASSWORD` 時只在首次建立 admin 帳號時印出強隨機 bootstrap 密碼；記憶體模式預設保留 1000 封並支援 `MEMORY_EVENT_LIMIT`；worker 預設 webhook timeout 調為 30000ms。
 - issue #22 細節補強：`secureCompare` 先將兩側輸入做 SHA-256 digest 再使用 `timingSafeEqual`，避免比較前因長度不同提早返回；bootstrap 密碼只存在首次啟動 log，README 需提醒部署者保存 log 或立即登入更換；GitHub Storage 近期郵件列表依 JSON `storedAt` / `receivedAt` 排序，舊檔名與新 randomUUID 檔名可並存。
+- issue #24 針對「沒有 Releases 無法判斷最新版本」：已新增 tag 觸發的 Release workflow（`.github/workflows/publish-release.yml`，push `v*` 自動建立 Release 並產生 notes），README 新增版本發布章節，明確以 GitHub Latest Release 為穩定版來源；若尚無 Release 才退回 `package.json` 版本。

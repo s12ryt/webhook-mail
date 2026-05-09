@@ -17,6 +17,37 @@
 └─ .github/workflows/
 ```
 
+## 版本發布（Releases）
+
+為了解決「無法判斷最新穩定版」的問題，專案採用 **Git tag 驅動的 Release 流程**：
+
+- 正式版本 tag 命名規則：`vX.Y.Z`（例如：`v0.1.0`）
+- push `v*` tag 後，GitHub Actions 會自動建立對應 Release
+- Release notes 由 GitHub 自動產生（`generate_release_notes: true`）
+
+### 如何判斷最新穩定版
+
+請以 GitHub 的 **Latest Release** 為準：
+
+- Releases 頁面：<https://github.com/s12ryt/webhook-mail/releases>
+- Latest Release API：<https://api.github.com/repos/s12ryt/webhook-mail/releases/latest>
+
+若尚未建立任何 Release，才退回參考 `package.json` 的 `version` 欄位（目前為 `0.1.0`）。
+
+### 如何發布新版本
+
+1. 確認程式碼與文件已完成
+2. 更新版本（例如 `package.json`）
+3. 建立並推送 tag（例如 `v0.2.0`）
+4. 等待 workflow 自動建立 Release
+
+範例：
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```
+
 ## 本地使用
 
 ### 安裝

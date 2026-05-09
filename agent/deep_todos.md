@@ -23,3 +23,4 @@
 - 2026-05-07：處理 issue #17，新增共用 `web-ui/`（manifest、HTML shell、CSS、JS），讓 `docker-accept` 與 Python/Node.js/Java 單文件版都透過 raw GitHub + 本機快取熱更新完整黑藍 UI，失敗時退回內建精簡頁面。
 - 2026-05-07：開始處理 issue #20，修正 GitHub 儲存郵件檔名碰撞、提升記憶體事件保留上限並記錄淘汰警告、將 `docker-accept` 未設定初始密碼時改為產生強隨機 bootstrap 密碼、將 webhook secret 比對改為安全比較、把 worker 預設 timeout 提高到 30 秒。
 - 2026-05-07：處理 issue #22，將 `secureCompare` 改為固定 SHA-256 digest 長度後再做 `timingSafeEqual`，補充 README 要保存首次啟動 log / 立即更換 bootstrap 密碼，並明確記錄 GitHub 郵件事件排序不依賴檔名格式。
+- 2026-05-09：處理 issue #24，新增 `.github/workflows/publish-release.yml`（tag `v*` 自動建立 GitHub Release），並在 `README.md` 增加版本發布規範、Latest Release 判斷方式與發版步驟，解決「沒有 Releases 無法判斷最新版本」問題。
