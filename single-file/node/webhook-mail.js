@@ -13,10 +13,53 @@ const WEB_UI_RAW_BASE = (process.env.WEB_UI_RAW_BASE || "https://raw.githubuserc
 const WEB_UI_REFRESH_SECONDS = Number(process.env.WEB_UI_REFRESH_SECONDS || 30);
 const WEB_UI_CACHE_DIR = process.env.WEB_UI_CACHE_DIR || ".web-ui-cache";
 const WEB_UI_FETCH_TIMEOUT_MS = Number(process.env.WEB_UI_FETCH_TIMEOUT_MS || 5000);
+const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+const LOGIN_FAILURE_LIMIT = 5;
+const LOGIN_LOCK_MS = 60 * 1000;
+const MAX_BODY_BYTES = 15 * 1024 * 1024;
+const loginRateLimits = new Map();
 let webUiLastCheckedAt = 0;
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function sessionExpiresAt() {
+  return new Date(Date.now() + SESSION_TTL_MS).toISOString();
+}
+
+function isExpired(iso) {
+  const time = Date.parse(String(iso || ""));
+  return Number.isFinite(time) && time <= Date.now();
+}
+
+function clientIp(req) {
+  return String(req.headers["x-forwarded-for"] || "").split(",")[0].trim() || req.socket.remoteAddress || "unknown";
+}
+
+function isLoginLocked(ip) {
+  const state = loginRateLimits.get(ip);
+  if (!state) return false;
+  if (state.lockedUntil <= Date.now()) {
+    loginRateLimits.delete(ip);
+    return false;
+  }
+  return true;
+}
+
+function recordLoginFailure(ip) {
+  const state = loginRateLimits.get(ip) || { failed: 0, lockedUntil: 0 };
+  state.failed += 1;
+  if (state.failed >= LOGIN_FAILURE_LIMIT) state.lockedUntil = Date.now() + LOGIN_LOCK_MS;
+  loginRateLimits.set(ip, state);
+}
+
+function recordLoginSuccess(ip) {
+  loginRateLimits.delete(ip);
+}
+
+function cookieSecuritySuffix() {
+  return process.env.NODE_ENV === "production" ? "; Secure" : "";
 }
 
 function escapeHtml(value) {
@@ -123,8 +166,14 @@ async function refreshWebUi() {
   for (const file of manifest.files || []) {
     if (!isSafeWebUiAssetName(file)) continue;
     const target = `${WEB_UI_CACHE_DIR}/${file}`;
+    const content = await fetchText(`${WEB_UI_RAW_BASE}/${file}`);
+    const expected = manifest.checksums && manifest.checksums[file];
+    if (expected) {
+      const actual = crypto.createHash("sha256").update(content, "utf8").digest("hex");
+      if (actual !== String(expected).toLowerCase()) throw new Error(`Checksum mismatch for ${file}: expected ${expected}, got ${actual}`);
+    }
     fs.mkdirSync(require("node:path").dirname(target), { recursive: true });
-    fs.writeFileSync(target, await fetchText(`${WEB_UI_RAW_BASE}/${file}`));
+    fs.writeFileSync(target, content);
   }
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
 }
@@ -168,14 +217,31 @@ function parseCookies(req) {
 }
 
 function currentSession(req) {
-  return store.sessions[parseCookies(req).webhook_mail_session] || null;
+  const sessionId = parseCookies(req).webhook_mail_session;
+  const session = store.sessions[sessionId] || null;
+  if (session && isExpired(session.expiresAt)) {
+    delete store.sessions[sessionId];
+    saveStore(store);
+    return null;
+  }
+  return session;
 }
 
 function readBody(req) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const chunks = [];
-    req.on("data", (chunk) => chunks.push(chunk));
+    let total = 0;
+    req.on("data", (chunk) => {
+      total += chunk.length;
+      if (total > MAX_BODY_BYTES) {
+        req.destroy(new Error("request body too large"));
+        reject(new Error("request body too large"));
+        return;
+      }
+      chunks.push(chunk);
+    });
     req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    req.on("error", reject);
   });
 }
 
@@ -200,7 +266,7 @@ function authenticate(username, password) {
     user.password = hashPassword(password);
     saveStore(store);
   }
-  return { username: user.username, role: user.role, createdAt: nowIso() };
+  return { username: user.username, role: user.role, createdAt: nowIso(), expiresAt: sessionExpiresAt() };
 }
 
 http.createServer(async (req, res) => {
@@ -212,23 +278,30 @@ http.createServer(async (req, res) => {
     return session ? send(res, 200, await dashboard(session)) : redirect(res, "/login");
   }
   if (req.method === "POST" && url.pathname === "/login") {
-    const form = querystring.parse(await readBody(req));
+    const ip = clientIp(req);
+    if (isLoginLocked(ip)) return send(res, 429, await loginPage("登入失敗太多次，請 60 秒後再試"));
+    let form;
+    try { form = querystring.parse(await readBody(req)); } catch { return send(res, 413, await loginPage("請求內容過大")); }
     const session = authenticate(String(form.username || "").trim(), String(form.password || ""));
-    if (!session) return send(res, 401, await loginPage("帳號或密碼錯誤"));
+    if (!session) {
+      recordLoginFailure(ip);
+      return send(res, 401, await loginPage("帳號或密碼錯誤"));
+    }
+    recordLoginSuccess(ip);
     const sessionId = crypto.randomBytes(32).toString("base64url");
     store.sessions[sessionId] = session;
     saveStore(store);
-    return send(res, 200, await dashboard(session, "登入成功"), "text/html; charset=utf-8", { "set-cookie": `webhook_mail_session=${encodeURIComponent(sessionId)}; HttpOnly; SameSite=Lax; Path=/` });
+    return send(res, 200, await dashboard(session, "登入成功"), "text/html; charset=utf-8", { "set-cookie": `webhook_mail_session=${encodeURIComponent(sessionId)}; HttpOnly; SameSite=Lax; Path=/${cookieSecuritySuffix()}` });
   }
   if (req.method === "POST" && url.pathname === "/logout") {
     delete store.sessions[parseCookies(req).webhook_mail_session];
     saveStore(store);
-    return redirect(res, "/login", { "set-cookie": "webhook_mail_session=; Max-Age=0; Path=/" });
+    return redirect(res, "/login", { "set-cookie": `webhook_mail_session=; Max-Age=0; Path=/${cookieSecuritySuffix()}` });
   }
   if (req.method === "POST" && url.pathname === "/api/webhooks/email") {
     if (WEBHOOK_SHARED_SECRET && req.headers["x-webhook-secret"] !== WEBHOOK_SHARED_SECRET) return sendJson(res, 401, { ok: false, error: "invalid webhook secret" });
     let payload;
-    try { payload = JSON.parse(await readBody(req)); } catch { return sendJson(res, 400, { ok: false, error: "invalid json" }); }
+    try { payload = JSON.parse(await readBody(req)); } catch (error) { return sendJson(res, error.message === "request body too large" ? 413 : 400, { ok: false, error: error.message === "request body too large" ? "request body too large" : "invalid json" }); }
     if (payload.event !== "email.received" || !payload.messageId) return sendJson(res, 400, { ok: false, error: "invalid payload" });
     store.events.unshift({ event: payload.event, messageId: payload.messageId, from: payload.from || "unknown", to: Array.isArray(payload.to) ? payload.to : [], rawSize: payload.rawSize || 0, subject: payload.subject || "(no subject)", headers: payload.headers || {}, textPreview: payload.textPreview || "", rawBase64: payload.rawBase64 || "", receivedAt: payload.receivedAt || nowIso(), storedAt: nowIso() });
     store.events = store.events.slice(0, 200);
@@ -238,7 +311,8 @@ http.createServer(async (req, res) => {
   if (req.method === "POST" && url.pathname === "/api/users") {
     const session = currentSession(req);
     if (!session || session.role !== "admin") return send(res, 403, await loginPage("需要管理員權限"));
-    const form = querystring.parse(await readBody(req));
+    let form;
+    try { form = querystring.parse(await readBody(req)); } catch { return send(res, 413, await dashboard(session, "請求內容過大")); }
     const username = String(form.username || "").trim();
     const password = String(form.password || "");
     if (username.length < 3 || username === ADMIN_INITIAL_USERNAME || store.users[username] || password.length < 8) return send(res, 400, await dashboard(session, "使用者名稱或密碼不合法"));
