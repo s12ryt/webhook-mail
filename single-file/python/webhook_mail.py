@@ -29,7 +29,9 @@ WEB_UI_CACHE_DIR = Path(os.getenv("WEB_UI_CACHE_DIR", ".web-ui-cache"))
 SESSION_TTL_SECONDS = 24 * 60 * 60
 LOGIN_FAILURE_LIMIT = 5
 LOGIN_LOCK_SECONDS = 60
+LOGIN_RATE_GC_SECONDS = 60
 login_rate_limits: dict[str, dict[str, float]] = {}
+login_rate_last_gc_at = 0.0
 web_ui_last_checked_at = 0.0
 
 
@@ -55,6 +57,7 @@ def cookie_secure_suffix() -> str:
 
 
 def is_login_locked(ip: str) -> bool:
+    gc_login_rate_limits()
     state = login_rate_limits.get(ip)
     if not state:
         return False
@@ -62,6 +65,17 @@ def is_login_locked(ip: str) -> bool:
         login_rate_limits.pop(ip, None)
         return False
     return True
+
+
+def gc_login_rate_limits() -> None:
+    global login_rate_last_gc_at
+    now = time.time()
+    if now - login_rate_last_gc_at < LOGIN_RATE_GC_SECONDS:
+        return
+    login_rate_last_gc_at = now
+    for key, state in list(login_rate_limits.items()):
+        if state.get("locked_until", 0) <= now:
+            login_rate_limits.pop(key, None)
 
 
 def record_login_failure(ip: str) -> None:

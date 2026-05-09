@@ -16,8 +16,10 @@ const WEB_UI_FETCH_TIMEOUT_MS = Number(process.env.WEB_UI_FETCH_TIMEOUT_MS || 50
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 const LOGIN_FAILURE_LIMIT = 5;
 const LOGIN_LOCK_MS = 60 * 1000;
+const LOGIN_RATE_GC_INTERVAL_MS = 60 * 1000;
 const MAX_BODY_BYTES = 15 * 1024 * 1024;
 const loginRateLimits = new Map();
+let loginRateLastGcAt = 0;
 let webUiLastCheckedAt = 0;
 
 function nowIso() {
@@ -38,6 +40,7 @@ function clientIp(req) {
 }
 
 function isLoginLocked(ip) {
+  gcLoginRateLimits();
   const state = loginRateLimits.get(ip);
   if (!state) return false;
   if (state.lockedUntil <= Date.now()) {
@@ -45,6 +48,14 @@ function isLoginLocked(ip) {
     return false;
   }
   return true;
+}
+
+function gcLoginRateLimits(now = Date.now()) {
+  if (now - loginRateLastGcAt < LOGIN_RATE_GC_INTERVAL_MS) return;
+  loginRateLastGcAt = now;
+  for (const [ip, state] of loginRateLimits) {
+    if (state.lockedUntil <= now) loginRateLimits.delete(ip);
+  }
 }
 
 function recordLoginFailure(ip) {
