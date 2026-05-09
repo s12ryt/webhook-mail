@@ -86,6 +86,11 @@ function defaultSessionExpiresAt(createdAt: string): string {
   return new Date(base + 24 * 60 * 60 * 1000).toISOString();
 }
 
+function isSessionExpired(session: SessionRecord): boolean {
+  const time = Date.parse(session.expiresAt);
+  return Number.isFinite(time) && time <= Date.now();
+}
+
 function parsePositiveInteger(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(String(value ?? ""), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -226,7 +231,13 @@ class MemoryStorage implements StorageAdapter {
   async init(): Promise<void> {}
 
   async getSession(sessionId: string): Promise<SessionRecord | null> {
-    return this.sessions.get(sessionId) ?? null;
+    const session = this.sessions.get(sessionId) ?? null;
+    if (session && isSessionExpired(session)) {
+      this.sessions.delete(sessionId);
+      return null;
+    }
+
+    return session;
   }
 
   async createSession(sessionId: string, session: SessionRecord): Promise<void> {
@@ -353,8 +364,8 @@ class MysqlStorage implements StorageAdapter {
 
   async getSession(sessionId: string): Promise<SessionRecord | null> {
     const [rows] = await this.pool.query<mysql.RowDataPacket[]>(
-      "SELECT username, role, created_at, expires_at FROM sessions WHERE session_id = ? LIMIT 1",
-      [sessionId]
+      "SELECT username, role, created_at, expires_at FROM sessions WHERE session_id = ? AND expires_at > ? LIMIT 1",
+      [sessionId, new Date().toISOString()]
     );
 
     const row = rows[0] as SessionRow | undefined;
@@ -509,8 +520,8 @@ class PostgresStorage implements StorageAdapter {
 
   async getSession(sessionId: string): Promise<SessionRecord | null> {
     const result = await this.pool.query<SessionRow>(
-      "SELECT username, role, created_at, expires_at FROM sessions WHERE session_id = $1 LIMIT 1",
-      [sessionId]
+      "SELECT username, role, created_at, expires_at FROM sessions WHERE session_id = $1 AND expires_at > $2 LIMIT 1",
+      [sessionId, new Date().toISOString()]
     );
 
     return result.rows[0] ? mapSessionRow(result.rows[0]) : null;
@@ -796,7 +807,13 @@ class GitHubStorage implements StorageAdapter {
   }
 
   async getSession(sessionId: string): Promise<SessionRecord | null> {
-    return this.readJson<SessionRecord>(this.filePath("sessions", `${sessionId}.json`));
+    const session = await this.readJson<SessionRecord>(this.filePath("sessions", `${sessionId}.json`));
+    if (session && isSessionExpired(session)) {
+      await this.deleteSession(sessionId);
+      return null;
+    }
+
+    return session;
   }
 
   async createSession(sessionId: string, session: SessionRecord): Promise<void> {

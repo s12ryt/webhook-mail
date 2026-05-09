@@ -25,3 +25,4 @@
 - 2026-05-07：處理 issue #22，將 `secureCompare` 改為固定 SHA-256 digest 長度後再做 `timingSafeEqual`，補充 README 要保存首次啟動 log / 立即更換 bootstrap 密碼，並明確記錄 GitHub 郵件事件排序不依賴檔名格式。
 - 2026-05-09：處理 issue #24，新增 `.github/workflows/publish-release.yml`（tag `v*` 自動建立 GitHub Release），並在 `README.md` 增加版本發布規範、Latest Release 判斷方式與發版步驟，解決「沒有 Releases 無法判斷最新版本」問題。
 - 2026-05-09：處理 issue #26，修正 worker 大郵件 base64 call stack 與 webhook 投遞失敗拒收、Docker/單文件登入 rate limit、session 到期、production Secure cookie、Python JSON 儲存 lock、Node request body 15MB 上限、GitHub 儲存郵件 index.json、以及 web-ui manifest SHA-256 checksum 驗證。
+- 2026-05-09：處理 issue #28，補上 Memory/GitHub storage 層自身的 session expiresAt 驗證與過期刪除，並讓 Docker/Node/Python 登入失敗 rate limit map 定期清除過期條目，避免長期掃描造成記憶體累積。

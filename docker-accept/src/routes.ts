@@ -17,6 +17,7 @@ type RouteDeps = {
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 const LOGIN_FAILURE_LIMIT = 5;
 const LOGIN_LOCK_MS = 60 * 1000;
+const LOGIN_RATE_GC_INTERVAL_MS = 60 * 1000;
 
 type LoginRateState = {
   failed: number;
@@ -24,6 +25,7 @@ type LoginRateState = {
 };
 
 const loginRateLimits = new Map<string, LoginRateState>();
+let loginRateLastGcAt = 0;
 
 function sessionExpiresAt(now = Date.now()): string {
   return new Date(now + SESSION_TTL_MS).toISOString();
@@ -40,6 +42,7 @@ function requestIp(request: Request): string {
 }
 
 function isLoginLocked(key: string): boolean {
+  gcLoginRateLimits();
   const state = loginRateLimits.get(key);
   if (!state) {
     return false;
@@ -49,6 +52,19 @@ function isLoginLocked(key: string): boolean {
     return false;
   }
   return true;
+}
+
+function gcLoginRateLimits(now = Date.now()): void {
+  if (now - loginRateLastGcAt < LOGIN_RATE_GC_INTERVAL_MS) {
+    return;
+  }
+
+  loginRateLastGcAt = now;
+  for (const [key, state] of loginRateLimits) {
+    if (state.lockedUntil <= now) {
+      loginRateLimits.delete(key);
+    }
+  }
 }
 
 function recordLoginFailure(key: string): void {
