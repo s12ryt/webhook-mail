@@ -39,6 +39,17 @@ function previewText(rawText: string): string {
   return rawText.replace(/\s+/g, " ").trim().slice(0, 500);
 }
 
+function bytesToBase64(bytes: Uint8Array): string {
+  const chunkSize = 0x8000;
+  let binary = "";
+
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+
+  return btoa(binary);
+}
+
 async function buildPayload(message: ForwardableEmailMessage): Promise<EmailWebhookPayload> {
   const rawBuffer = await new Response(message.raw).arrayBuffer();
   const rawBytes = new Uint8Array(rawBuffer);
@@ -52,7 +63,7 @@ async function buildPayload(message: ForwardableEmailMessage): Promise<EmailWebh
     subject: message.headers.get("subject") ?? "(no subject)",
     headers: Object.fromEntries(message.headers.entries()),
     textPreview: previewText(new TextDecoder().decode(rawBytes)),
-    rawBase64: btoa(String.fromCharCode(...rawBytes)),
+    rawBase64: bytesToBase64(rawBytes),
     receivedAt: new Date().toISOString()
   };
 }
@@ -134,6 +145,11 @@ export default {
   },
 
   async email(message: ForwardableEmailMessage, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(sendWebhook(message, env));
+    ctx.waitUntil(
+      sendWebhook(message, env).catch((error) => {
+        console.error("Webhook delivery failed, rejecting message:", error);
+        message.setReject("Webhook delivery failed");
+      })
+    );
   }
 };
